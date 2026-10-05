@@ -24,6 +24,9 @@ element can still be moved, renamed, extended or deleted before you export.
 - **Auto-layout on import** — files without layout information (`BPMNDiagram` DI) are laid out first.
 - **No page scrolling** — the app is bound to the viewport height; only the editor and side panel scroll.
 - **Strict output prompt** — one click copies the system prompt for LLMs that emit the JSON schema.
+- **English or German labels** — the **Output language** selector decides which language the prompt asks the
+  LLM to write labels, lane names, and edge conditions in. The choice is stored in `localStorage` and applies
+  to the next copy, the rule wording, and the example JSON.
 - **Dark mode** — follows `prefers-color-scheme`.
 
 ## Getting started
@@ -47,12 +50,12 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ## Workflow
 
-1. Click **Copy QwenCoder Prompt** and paste it into your LLM together with a plain-English process
-   description.
-2. Paste the returned JSON into the **Process definition (JSON)** editor.
-3. Click **Generate & Edit Diagram** (or press `Ctrl`/`⌘` + `Enter`).
-4. Refine the result on the canvas, optionally in fullscreen.
-5. Click **Export .bpmn**, **Export .xml**, **Export PNG**, **Export SVG** or **Export Mermaid** to
+1. Pick the **Output language** next to the button (English by default, remembered in `localStorage`).
+2. Click **Copy Prompt** and paste it into your LLM together with a process description.
+3. Paste the returned JSON into the **Process definition (JSON)** editor.
+4. Click **Generate & Edit Diagram** (or press `Ctrl`/`⌘` + `Enter`).
+5. Refine the result on the canvas, optionally in fullscreen.
+6. Click **Export .bpmn**, **Export .xml**, **Export PNG**, **Export SVG** or **Export Mermaid** to
    download the current state of the canvas. **Copy Markdown** copies the Mermaid code in a fenced block
    for GitHub or GitLab.
 
@@ -86,6 +89,14 @@ the app rejects such ids up front with a readable message.
       "targetId": "task_1",                 // required, must reference an existing node
       "condition": "Ja"                     // optional, becomes the sequence flow name
     }
+  ],
+  "dataAssociations": [                    // optional, ids must be unique
+    {
+      "id": "da1",                         // required
+      "nodeId": "task_1",                  // required, must reference an activity
+      "dataNodeId": "store_1",             // required, must reference a data node
+      "direction": "read"                  // required, "read" or "write"
+    }
   ]
 }
 ```
@@ -105,6 +116,35 @@ The same rules are enforced for the model by the LLM prompt in section 3b, and t
 inside its own lane band.
 
 Validation errors point at the exact path, e.g. `edges[2].sourceId references unknown node "start_1".`
+
+### Databases and data elements
+
+`dataStoreReference` (database, data warehouse, file store) and `dataObjectReference` (short-lived
+information inside the process) are supported, but BPMN gives them a different status than tasks and
+events, and the schema enforces that difference:
+
+- `bpmn:DataObjectReference` and `bpmn:DataStoreReference` are `FlowElement`s, **not** `FlowNode`s. A lane
+  may only contain flow nodes, so a data node must **not** carry a `laneId`. The system that uses the
+  database belongs in its own lane; the database itself sits outside the lanes.
+- A `bpmn:SequenceFlow` only connects flow nodes, so a data node must **not** appear in `edges`. That link
+  is a *data association* and lives in `dataAssociations`.
+
+`dataAssociations` becomes a real BPMN data association, not a cosmetic line:
+
+| JSON | BPMN |
+| --- | --- |
+| `"direction": "read"` | `bpmn:DataInputAssociation` inside the task, with a generated `bpmn:DataInput` in its `ioSpecification` and the data element as `sourceRef` |
+| `"direction": "write"` | `bpmn:DataOutputAssociation` inside the task, with a generated `bpmn:DataOutput` and the data element as `targetRef` |
+
+Only activities can carry them (`userTask`, `serviceTask`, `manualTask`, `scriptTask`, `sendTask`,
+`receiveTask`, `businessRuleTask`, `subProcess`, `callActivity`); events and gateways are rejected, because
+the association is a child of `bpmn:Activity` in BPMN.
+
+`bpmn-auto-layout` emits no DI for data associations, so `applyDataAssociationLayout()` routes them itself:
+orthogonal, around every other shape, and clear of every line already on the plane. Several associations
+on the same shape dock at spread-out points instead of all on the edge centre, so they do not run on top
+of the sequence flows. In the Mermaid export a data association becomes a dotted link, pointed the way the
+data moves (store → task when reading, task → store when writing).
 
 ### Supported node types
 
@@ -173,7 +213,8 @@ Shape mapping. Mermaid offers fewer shapes than BPMN, so several element types s
 
 Gateway markers (the `+` of a parallel split, the `×` of an exclusive split) have no Mermaid equivalent,
 so gateways differ only in shape. A sequence flow `condition` becomes an edge label. Labels are quoted and
-HTML-escaped, so quotes, `<`, `>` and entity-like `#hash;` sequences are safe.
+HTML-escaped, so quotes, `<`, `>` and entity-like `#hash;` sequences are safe. A data association becomes a
+dotted link (`-.->`), pointed the way the data moves: store → task when reading, task → store when writing.
 
 ## Project structure
 
@@ -215,6 +256,12 @@ public/
   JavaScript, so it only works after the modeler has loaded.
 - **The XML preview is a snapshot.** It shows the last generated or imported XML. After canvas edits an
   `edited` badge appears; use **Export .bpmn** to get the current state.
+- **Data elements sit outside the lanes.** That is forced by BPMN: a lane may only contain flow nodes, and a
+  data object or data store is not a flow node. A system that owns a database therefore gets its own lane,
+  and the database is a data node connected to the steps through `dataAssociations`.
+- **A data association has no name.** `bpmn:DataInputAssociation` and `bpmn:DataOutputAssociation` carry no
+  label field, so only the direction (`read`/`write`) is modelled; the generated `DataInput`/`DataOutput`
+  takes the name of the data element.
 - **The modeler is client-only.** Diagram rendering requires JavaScript; the page itself is statically
   prerendered.
 

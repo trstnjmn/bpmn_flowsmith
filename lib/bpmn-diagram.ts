@@ -21,12 +21,27 @@ export interface EdgeInput {
   condition?: string;
 }
 
+/**
+ * A link between a step and a data element. It is deliberately not part of
+ * "edges": a sequence flow only connects flow nodes, while a data association is
+ * a different BPMN element (`bpmn:DataInputAssociation` / `bpmn:DataOutputAssociation`).
+ */
+export interface DataAssociationInput {
+  id: string;
+  nodeId: string;
+  dataNodeId: string;
+  direction: DataAssociationDirection;
+}
+
+export type DataAssociationDirection = "read" | "write";
+
 export interface DiagramInput {
   processId: string;
   processName?: string;
   lanes: LaneInput[];
   nodes: NodeInput[];
   edges: EdgeInput[];
+  dataAssociations: DataAssociationInput[];
 }
 
 export class DiagramInputError extends Error {
@@ -66,6 +81,41 @@ export const SUPPORTED_NODE_TYPES: readonly string[] = Object.keys(
   NODE_TYPE_BY_KIND,
 );
 
+/**
+ * `bpmn:DataObjectReference` and `bpmn:DataStoreReference` are `FlowElement`s but
+ * not `FlowNode`s. Two things follow from that which the moddle descriptor does
+ * not enforce for us: they must not appear in `bpmn:Lane/flowNodeRef`, and they
+ * must not be the source or target of a `bpmn:SequenceFlow`. In BPMN those links
+ * are data associations instead.
+ */
+const DATA_NODE_KINDS: ReadonlySet<string> = new Set([
+  "dataObjectReference",
+  "dataStoreReference",
+]);
+
+/**
+ * `bpmn:DataInputAssociation` and `bpmn:DataOutputAssociation` are children of
+ * `bpmn:Activity`, so only activities can read from or write to a data element.
+ * Events and gateways cannot.
+ */
+const ACTIVITY_NODE_KINDS: ReadonlySet<string> = new Set([
+  "task",
+  "userTask",
+  "serviceTask",
+  "manualTask",
+  "scriptTask",
+  "sendTask",
+  "receiveTask",
+  "businessRuleTask",
+  "subProcess",
+  "callActivity",
+]);
+
+export const SUPPORTED_DATA_ASSOCIATION_DIRECTIONS: readonly string[] = [
+  "read",
+  "write",
+];
+
 const TARGET_NAMESPACE = "http://bpmn.io/schema/bpmn";
 const EXPORTER = "BPMN FlowSmith";
 const EXPORTER_VERSION = "1.0.0";
@@ -82,6 +132,8 @@ const CHANNEL_STEPS = 8;
 const CHANNEL_MAX_STEPS = 40;
 const EDGE_OVERLAP_TOLERANCE = 4;
 const SELF_LOOP_OFFSET = 25;
+/** Distance between the dock points of data associations on the same shape. */
+const ASSOCIATION_ANCHOR_OFFSET = 16;
 
 function readBounds(element: ModdleElement): Bounds | null {
   const bounds = element.get("bounds") as Bounds | undefined;
@@ -286,6 +338,7 @@ export function parseDiagramInput(value: unknown): DiagramInput {
 
   const nodes: NodeInput[] = [];
   const nodeIds = new Set<string>();
+  const nodeTypeById = new Map<string, string>();
   const nodeRecords = asOptionalArray(root.nodes, "nodes");
   if (nodeRecords.length === 0) {
     fail("nodes must contain at least one node.");
@@ -305,6 +358,7 @@ export function parseDiagramInput(value: unknown): DiagramInput {
         `Unsupported node type "${type}" at nodes[${index}].type. Supported types: ${SUPPORTED_NODE_TYPES.join(", ")}.`,
       );
     }
+    nodeTypeById.set(id, type);
 
     const laneId = asOptionalString(node.laneId, `nodes[${index}].laneId`);
     if (laneId !== undefined && !laneIds.has(laneId)) {
@@ -312,6 +366,11 @@ export function parseDiagramInput(value: unknown): DiagramInput {
         `nodes[${index}].laneId references unknown lane "${laneId}". Known lanes: ${
           [...laneIds].join(", ") || "none"
         }.`,
+      );
+    }
+    if (laneId !== undefined && DATA_NODE_KINDS.has(type)) {
+      fail(
+        `nodes[${index}].laneId must not be set on a "${type}". A BPMN lane can only contain flow nodes (events, tasks, gateways), so "${id}" has to sit outside the lanes.`,
       );
     }
 
@@ -343,6 +402,18 @@ export function parseDiagramInput(value: unknown): DiagramInput {
       fail(`edges[${index}].targetId references unknown node "${targetId}".`);
     }
 
+    for (const [role, referencedId] of [
+      ["sourceId", sourceId],
+      ["targetId", targetId],
+    ] as const) {
+      const nodeType = nodeTypeById.get(referencedId);
+      if (nodeType !== undefined && DATA_NODE_KINDS.has(nodeType)) {
+        fail(
+          `edges[${index}].${role} points at "${referencedId}", which is a "${nodeType}". A sequence flow only connects flow nodes, so a data object or data store cannot be linked through "edges". Put the data element next to the step that uses it.`,
+        );
+      }
+    }
+
     edges.push({
       id,
       sourceId,
@@ -351,7 +422,94 @@ export function parseDiagramInput(value: unknown): DiagramInput {
     });
   });
 
-  return { processId, processName, lanes, nodes, edges };
+  const dataAssociations: DataAssociationInput[] = [];
+  const dataAssociationIds = new Set<string>();
+  const dataAssociationKeys = new Set<string>();
+  asOptionalArray(root.dataAssociations, "dataAssociations").forEach(
+    (rawAssociation, index) => {
+      const association = asRecord(
+        rawAssociation,
+        `dataAssociations[${index}]`,
+      );
+      const id = asRequiredString(
+        association.id,
+        `dataAssociations[${index}].id`,
+      );
+      if (dataAssociationIds.has(id)) {
+        fail(`Duplicate data association id "${id}" at dataAssociations[${index}].id.`);
+      }
+      assertUsableId(id, `dataAssociations[${index}].id`);
+      dataAssociationIds.add(id);
+
+      const nodeId = asRequiredString(
+        association.nodeId,
+        `dataAssociations[${index}].nodeId`,
+      );
+      const dataNodeId = asRequiredString(
+        association.dataNodeId,
+        `dataAssociations[${index}].dataNodeId`,
+      );
+
+      if (!nodeIds.has(nodeId)) {
+        fail(
+          `dataAssociations[${index}].nodeId references unknown node "${nodeId}".`,
+        );
+      }
+      if (!nodeIds.has(dataNodeId)) {
+        fail(
+          `dataAssociations[${index}].dataNodeId references unknown node "${dataNodeId}".`,
+        );
+      }
+
+      const nodeType = nodeTypeById.get(nodeId) as string;
+      const dataNodeType = nodeTypeById.get(dataNodeId) as string;
+
+      if (!DATA_NODE_KINDS.has(dataNodeType)) {
+        fail(
+          `dataAssociations[${index}].dataNodeId must point at a data element ("${dataNodeType}" is "${dataNodeId}"). Use "edges" for steps that follow each other.`,
+        );
+      }
+      if (!ACTIVITY_NODE_KINDS.has(nodeType)) {
+        fail(
+          `dataAssociations[${index}].nodeId must point at a step ("${nodeType}" is "${nodeId}"). Only tasks, sub processes and call activities can read from or write to a data element.`,
+        );
+      }
+
+      const direction = asRequiredString(
+        association.direction,
+        `dataAssociations[${index}].direction`,
+      );
+      if (!SUPPORTED_DATA_ASSOCIATION_DIRECTIONS.includes(direction)) {
+        fail(
+          `Unsupported direction "${direction}" at dataAssociations[${index}].direction. Use ${SUPPORTED_DATA_ASSOCIATION_DIRECTIONS.map((value) => `"${value}"`).join(" or ")}.`,
+        );
+      }
+
+      const key = `${nodeId}|${dataNodeId}|${direction}`;
+      if (dataAssociationKeys.has(key)) {
+        fail(
+          `dataAssociations[${index}] repeats the "${direction}" link between "${nodeId}" and "${dataNodeId}".`,
+        );
+      }
+      dataAssociationKeys.add(key);
+
+      dataAssociations.push({
+        id,
+        nodeId,
+        dataNodeId,
+        direction: direction as DataAssociationDirection,
+      });
+    },
+  );
+
+  return {
+    processId,
+    processName,
+    lanes,
+    nodes,
+    edges,
+    dataAssociations,
+  };
 }
 
 export async function buildBpmnXml(input: DiagramInput): Promise<string> {
@@ -404,6 +562,58 @@ export async function buildBpmnXml(input: DiagramInput): Promise<string> {
     push(target, "incoming", sequenceFlow);
   }
 
+  for (const association of input.dataAssociations) {
+    const activity = flowNodeById.get(association.nodeId) as ModdleElement;
+    const dataElement = flowNodeById.get(association.dataNodeId) as ModdleElement;
+
+    // Both association kinds live on the activity and need an ioSpecification to
+    // hold the data input or data output they refer to.
+    let ioSpecification = activity.get("ioSpecification") as
+      | ModdleElement
+      | undefined;
+
+    if (!ioSpecification) {
+      ioSpecification = moddle.create("bpmn:InputOutputSpecification", {
+        id: `${association.nodeId}_io`,
+      });
+      activity.set("ioSpecification", ioSpecification);
+    }
+
+    if (association.direction === "read") {
+      // The task consumes the data element, so the data element is the source and
+      // the task's data input is the target.
+      const dataInput = moddle.create("bpmn:DataInput", {
+        id: `${association.id}_in`,
+        name: dataElement.get("name"),
+      });
+      push(ioSpecification, "dataInputs", dataInput);
+
+      const dataInputAssociation = moddle.create(
+        "bpmn:DataInputAssociation",
+        { id: association.id },
+      );
+      dataInputAssociation.set("sourceRef", [dataElement]);
+      dataInputAssociation.set("targetRef", dataInput);
+      push(activity, "dataInputAssociations", dataInputAssociation);
+    } else {
+      // The task produces data and hands it to the data element, so the data
+      // output is the source and the data element is the target.
+      const dataOutput = moddle.create("bpmn:DataOutput", {
+        id: `${association.id}_out`,
+        name: dataElement.get("name"),
+      });
+      push(ioSpecification, "dataOutputs", dataOutput);
+
+      const dataOutputAssociation = moddle.create(
+        "bpmn:DataOutputAssociation",
+        { id: association.id },
+      );
+      dataOutputAssociation.set("sourceRef", [dataOutput]);
+      dataOutputAssociation.set("targetRef", dataElement);
+      push(activity, "dataOutputAssociations", dataOutputAssociation);
+    }
+  }
+
   if (input.lanes.length > 0) {
     const laneSet = moddle.create("bpmn:LaneSet", {
       id: `${input.processId}_LaneSet_1`,
@@ -427,8 +637,74 @@ export async function buildBpmnXml(input: DiagramInput): Promise<string> {
   return xml;
 }
 
+type ModdleProperty = { name?: string };
+
+function moddleHasProperty(element: ModdleElement, property: string): boolean {
+  const descriptor = (
+    element as ModdleElement & { $descriptor?: { properties?: ModdleProperty[] } }
+  ).$descriptor;
+  const properties = descriptor?.properties ?? [];
+
+  return properties.some((entry) => entry.name === property);
+}
+
+/**
+ * `bpmn-moddle` does not derive `incoming`/`outgoing` from the sequence flow
+ * references when it parses XML — those child elements have to be present in the
+ * file. `bpmn-auto-layout` walks the graph through `outgoing`, so an externally
+ * produced `.bpmn` without them is laid out with shapes but without a single
+ * connection. Rebuilding the two collections from the sequence flows makes the
+ * layout independent of how the file was written.
+ *
+ * Data objects and data stores have no such properties, so the descriptor is
+ * checked before writing — setting them would serialise unknown attributes.
+ */
+async function withResolvedFlowDirections(xml: string): Promise<string> {
+  const moddle = new BpmnModdle();
+  const { rootElement } = await moddle.fromXML(xml);
+  const processes = (
+    (rootElement.get("rootElements") as ModdleElement[] | undefined) ?? []
+  ).filter((element) => String(element.$type) === "bpmn:Process");
+
+  for (const process of processes) {
+    const flowElements =
+      (process.get("flowElements") as ModdleElement[] | undefined) ?? [];
+    const sequenceFlows = flowElements.filter(
+      (element) => String(element.$type) === "bpmn:SequenceFlow",
+    );
+
+    for (const flowElement of flowElements) {
+      if (String(flowElement.$type) === "bpmn:SequenceFlow") {
+        continue;
+      }
+      if (moddleHasProperty(flowElement, "incoming")) {
+        flowElement.set("incoming", []);
+      }
+      if (moddleHasProperty(flowElement, "outgoing")) {
+        flowElement.set("outgoing", []);
+      }
+    }
+
+    for (const sequenceFlow of sequenceFlows) {
+      const source = sequenceFlow.get("sourceRef") as ModdleElement | undefined;
+      const target = sequenceFlow.get("targetRef") as ModdleElement | undefined;
+
+      if (source && moddleHasProperty(source, "outgoing")) {
+        push(source, "outgoing", sequenceFlow);
+      }
+      if (target && moddleHasProperty(target, "incoming")) {
+        push(target, "incoming", sequenceFlow);
+      }
+    }
+  }
+
+  const { xml: resolvedXml } = await moddle.toXML(rootElement, { format: true });
+
+  return resolvedXml;
+}
+
 export async function layoutBpmnXml(xml: string): Promise<string> {
-  const laidOutXml = await layoutProcess(xml);
+  const laidOutXml = await layoutProcess(await withResolvedFlowDirections(xml));
   return await applyLaneLayout(laidOutXml);
 }
 
@@ -473,6 +749,337 @@ function planBand(memberBounds: Bounds[]): Band {
   return { slots, rowHeights };
 }
 
+export type AssociationLink = {
+  association: ModdleElement;
+  nodeId: string;
+  dataNodeId: string;
+  direction: DataAssociationDirection;
+};
+
+type Point = { x: number; y: number };
+
+/**
+ * Reads the data associations back out of the model. One end of an association is
+ * the step, the other end is the `bpmn:DataInput` or `bpmn:DataOutput` inside the
+ * step's `ioSpecification` — that one has no shape, so the drawn line joins the
+ * step and the data element.
+ */
+export function collectDataAssociationLinks(
+  definitions: ModdleElement,
+): AssociationLink[] {
+  const links: AssociationLink[] = [];
+  const rootElements =
+    (definitions.get("rootElements") as ModdleElement[] | undefined) ?? [];
+
+  for (const rootElement of rootElements) {
+    if (String(rootElement.$type) !== "bpmn:Process") {
+      continue;
+    }
+
+    const flowElements =
+      (rootElement.get("flowElements") as ModdleElement[] | undefined) ?? [];
+
+    for (const flowElement of flowElements) {
+      for (const property of [
+        "dataInputAssociations",
+        "dataOutputAssociations",
+      ]) {
+        const associations =
+          (flowElement.get(property) as ModdleElement[] | undefined) ?? [];
+
+        for (const association of associations) {
+          // Reading: sourceRef is the data element. Writing: targetRef is.
+          const dataNode =
+            property === "dataInputAssociations"
+              ? ((association.get("sourceRef") as ModdleElement[] | undefined) ?? [])[0]
+              : (association.get("targetRef") as ModdleElement | undefined);
+
+          if (dataNode?.id === undefined) {
+            continue;
+          }
+
+          links.push({
+            association,
+            nodeId: String(flowElement.get("id")),
+            dataNodeId: String(dataNode.id),
+            direction:
+              property === "dataInputAssociations" ? "read" : "write",
+          });
+        }
+      }
+    }
+  }
+
+  return links;
+}
+
+/**
+ * `bpmn-auto-layout` only emits DI for sequence flows, so a data association would
+ * be imported without any line. The two ends are routed orthogonally through the
+ * space between the step and the data element, avoiding every other shape and
+ * every line that is already on the plane.
+ */
+export async function applyDataAssociationLayout(xml: string): Promise<string> {
+  const moddle = new BpmnModdle();
+  const { rootElement: definitions } = await moddle.fromXML(xml);
+
+  const diagrams = definitions.get("diagrams") as ModdleElement[] | undefined;
+  const plane = diagrams?.[0]?.get("plane") as ModdleElement | undefined;
+
+  if (!plane) {
+    return xml;
+  }
+
+  const links = collectDataAssociationLinks(definitions);
+
+  if (links.length === 0) {
+    return xml;
+  }
+
+  const planeElements = (plane.get("planeElement") as ModdleElement[]) ?? [];
+  const boundsByNodeId = new Map<string, Bounds>();
+
+  for (const element of planeElements) {
+    if (
+      element.$type !== "bpmndi:BPMNShape" ||
+      element.get("isLabel") === true
+    ) {
+      continue;
+    }
+
+    const businessObject = element.get("bpmnElement") as ModdleElement | undefined;
+
+    if (businessObject === undefined || businessObject.id === undefined) {
+      continue;
+    }
+
+    // Lane bands are background, never an obstacle for a data line.
+    if (String(businessObject.$type) === "bpmn:Lane") {
+      continue;
+    }
+
+    const bounds = readBounds(element);
+
+    if (bounds) {
+      boundsByNodeId.set(String(businessObject.id), bounds);
+    }
+  }
+
+  const existingSegments: Array<[Point, Point]> = [];
+
+  for (const element of planeElements) {
+    if (element.$type !== "bpmndi:BPMNEdge") {
+      continue;
+    }
+
+    const waypoints = (element.get("waypoint") as Bounds[] | undefined) ?? [];
+
+    for (let index = 0; index + 1 < waypoints.length; index++) {
+      existingSegments.push([
+        { x: Number(waypoints[index]!.x), y: Number(waypoints[index]!.y) },
+        {
+          x: Number(waypoints[index + 1]!.x),
+          y: Number(waypoints[index + 1]!.y),
+        },
+      ]);
+    }
+  }
+
+  const overlaps = (
+    from: Point,
+    to: Point,
+    otherFrom: Point,
+    otherTo: Point,
+  ): number => {
+    if (from.y === to.y && otherFrom.y === otherTo.y) {
+      if (Math.abs(from.y - otherFrom.y) > 1) {
+        return 0;
+      }
+
+      const low = Math.max(
+        Math.min(from.x, to.x),
+        Math.min(otherFrom.x, otherTo.x),
+      );
+      const high = Math.min(Math.max(from.x, to.x), Math.max(otherFrom.x, otherTo.x));
+
+      return high - low;
+    }
+
+    if (otherFrom.x !== otherTo.x || Math.abs(from.x - otherFrom.x) > 1) {
+      return 0;
+    }
+
+    const low = Math.max(
+      Math.min(from.y, to.y),
+      Math.min(otherFrom.y, otherTo.y),
+    );
+    const high = Math.min(Math.max(from.y, to.y), Math.max(otherFrom.y, otherTo.y));
+
+    return high - low;
+  };
+
+  const hitsBox = (from: Point, to: Point, box: Bounds): boolean => {
+    const left = box.x - EDGE_CLEARANCE;
+    const right = box.x + box.width + EDGE_CLEARANCE;
+    const top = box.y - EDGE_CLEARANCE;
+    const bottom = box.y + box.height + EDGE_CLEARANCE;
+
+    if (from.x === to.x) {
+      return (
+        from.x > left &&
+        from.x < right &&
+        Math.max(from.y, to.y) > top &&
+        Math.min(from.y, to.y) < bottom
+      );
+    }
+
+    return (
+      from.y > top &&
+      from.y < bottom &&
+      Math.max(from.x, to.x) > left &&
+      Math.min(from.x, to.x) < right
+    );
+  };
+
+  const isUsable = (points: Point[], skipIds: ReadonlySet<string>): boolean =>
+    points.every((entry, index) => {
+      if (index === 0) {
+        return true;
+      }
+
+      const previous = points[index - 1]!;
+      const overShape = [...boundsByNodeId.entries()].some(
+        ([id, box]) => !skipIds.has(id) && hitsBox(previous, entry, box),
+      );
+
+      if (overShape) {
+        return false;
+      }
+
+      return !existingSegments.some(
+        ([from, to]) => overlaps(previous, entry, from, to) > EDGE_OVERLAP_TOLERANCE,
+      );
+    });
+
+  const candidatesFor = (
+    nodeBox: Bounds,
+    dataBox: Bounds,
+    nodeShift: number,
+    dataShift: number,
+  ): Point[][] => {
+    const nodeCx = Math.round(nodeBox.x + nodeBox.width / 2);
+    const nodeCy = Math.round(nodeBox.y + nodeBox.height / 2);
+    const dataCx = Math.round(dataBox.x + dataBox.width / 2);
+    const dataCy = Math.round(dataBox.y + dataBox.height / 2);
+    const vertical = Math.abs(dataCy - nodeCy) >= Math.abs(dataCx - nodeCx);
+    const candidates: Point[][] = [];
+
+    // The centre of an edge is where sequence flows dock, so a data line that
+    // also leaves from the centre would run on top of the flow. Every additional
+    // association on a shape is therefore moved along that edge.
+    const fit = (shift: number, size: number): number => {
+      const limit = Math.max(0, Math.round(size / 2) - 4);
+
+      return Math.max(-limit, Math.min(limit, shift));
+    };
+
+    if (vertical) {
+      const dataBelow = dataCy > nodeCy;
+      const startY = dataBelow
+        ? Math.round(nodeBox.y + nodeBox.height)
+        : Math.round(nodeBox.y);
+      const endY = dataBelow
+        ? Math.round(dataBox.y)
+        : Math.round(dataBox.y + dataBox.height);
+      const startX = nodeCx + fit(nodeShift, nodeBox.width);
+      const endX = dataCx + fit(dataShift, dataBox.width);
+
+      for (const fraction of [0.5, 0.35, 0.65, 0.2, 0.8]) {
+        const midY = Math.round(startY + (endY - startY) * fraction);
+        candidates.push([
+          { x: startX, y: startY },
+          { x: startX, y: midY },
+          { x: endX, y: midY },
+          { x: endX, y: endY },
+        ]);
+      }
+    } else {
+      const dataRight = dataCx > nodeCx;
+      const startX = dataRight
+        ? Math.round(nodeBox.x + nodeBox.width)
+        : Math.round(nodeBox.x);
+      const endX = dataRight
+        ? Math.round(dataBox.x)
+        : Math.round(dataBox.x + dataBox.width);
+      const startY = nodeCy + fit(nodeShift, nodeBox.height);
+      const endY = dataCy + fit(dataShift, dataBox.height);
+
+      for (const fraction of [0.5, 0.35, 0.65, 0.2, 0.8]) {
+        const midX = Math.round(startX + (endX - startX) * fraction);
+        candidates.push([
+          { x: startX, y: startY },
+          { x: midX, y: startY },
+          { x: midX, y: endY },
+          { x: endX, y: endY },
+        ]);
+      }
+    }
+
+    return candidates;
+  };
+
+  const newEdges: ModdleElement[] = [];
+  const linkCountByNodeId = new Map<string, number>();
+
+  for (const link of links) {
+    const nodeBox = boundsByNodeId.get(link.nodeId);
+    const dataBox = boundsByNodeId.get(link.dataNodeId);
+
+    if (!nodeBox || !dataBox) {
+      continue;
+    }
+
+    const skipIds = new Set([link.nodeId, link.dataNodeId]);
+    const nodeOrdinal = linkCountByNodeId.get(link.nodeId) ?? 0;
+    const dataOrdinal = linkCountByNodeId.get(link.dataNodeId) ?? 0;
+    linkCountByNodeId.set(link.nodeId, nodeOrdinal + 1);
+    linkCountByNodeId.set(link.dataNodeId, dataOrdinal + 1);
+
+    const candidates = candidatesFor(
+      nodeBox,
+      dataBox,
+      ASSOCIATION_ANCHOR_OFFSET * (nodeOrdinal + 1),
+      ASSOCIATION_ANCHOR_OFFSET * (dataOrdinal + 1),
+    );
+    const route =
+      candidates.find((candidate) => isUsable(candidate, skipIds)) ?? candidates[0]!;
+
+    for (let index = 0; index + 1 < route.length; index++) {
+      existingSegments.push([route[index]!, route[index + 1]!]);
+    }
+
+    const edge = moddle.create("bpmndi:BPMNEdge", {
+      id: `${String(link.association.get("id"))}_di`,
+      bpmnElement: link.association,
+    });
+    edge.set(
+      "waypoint",
+      route.map((entry) => moddle.create("dc:Point", { x: entry.x, y: entry.y })),
+    );
+    newEdges.push(edge);
+  }
+
+  if (newEdges.length === 0) {
+    return xml;
+  }
+
+  plane.set("planeElement", [...newEdges, ...planeElements]);
+
+  const { xml: associationXml } = await moddle.toXML(definitions, { format: true });
+
+  return associationXml;
+}
+
 /**
  * bpmn-auto-layout positions flow nodes by rank only — it knows nothing about
  * lanes, so a node assigned to "Teamleiter" can end up inside the band of
@@ -503,7 +1110,7 @@ export async function applyLaneLayout(xml: string): Promise<string> {
   const lanes = (laneSets[0]?.get("lanes") as ModdleElement[] | undefined) ?? [];
 
   if (lanes.length === 0) {
-    return xml;
+    return await applyDataAssociationLayout(xml);
   }
 
   const laneIds = new Set(lanes.map((lane) => String(lane.id)));
@@ -663,8 +1270,6 @@ export async function applyLaneLayout(xml: string): Promise<string> {
       y: newYByNodeId.get(String(id)) ?? bounds.y,
     };
   };
-
-  type Point = { x: number; y: number };
 
   const point = (x: number, y: number): ModdleElement =>
     moddle.create("dc:Point", { x, y });
@@ -949,10 +1554,22 @@ export async function applyLaneLayout(xml: string): Promise<string> {
     }
   };
 
+  for (const plan of edgePlans) {
+    // A self loop leaves the node on its right border like a forward flow, so it
+    // must not be classified as backward. A backward edge enters its target on
+    // the target's right border.
+    plan.isBackward =
+      plan.sourceId !== plan.targetId &&
+      plan.targetBounds.x < plan.sourceBounds.x + plan.sourceBounds.width;
+  }
+
   spreadAnchors(
     edgePlans,
     (plan) => ({
-      key: `${plan.sourceId}:out:${plan.isBackward ? "left" : "right"}`,
+      // Grouped per node and not per side: a node that is both entered from the
+      // left and from the right would otherwise centre both flows on the same y
+      // and their approach segments would run on top of each other.
+      key: `${plan.sourceId}:out`,
       box: plan.sourceBounds,
       partnerY: plan.targetBounds.y + plan.targetBounds.height / 2,
     }),
@@ -961,15 +1578,12 @@ export async function applyLaneLayout(xml: string): Promise<string> {
     },
   );
 
-  for (const plan of edgePlans) {
-    plan.isBackward =
-      plan.targetBounds.x < plan.sourceBounds.x + plan.sourceBounds.width;
-  }
-
+  // Self loops dock on the node bottom and ignore endY, so they take no slot in
+  // the target side distribution.
   spreadAnchors(
-    edgePlans,
+    edgePlans.filter((plan) => plan.sourceId !== plan.targetId),
     (plan) => ({
-      key: `${plan.targetId}:in:${plan.isBackward ? "right" : "left"}`,
+      key: `${plan.targetId}:in`,
       box: plan.targetBounds,
       partnerY: plan.sourceBounds.y + plan.sourceBounds.height / 2,
     }),
@@ -1014,16 +1628,18 @@ export async function applyLaneLayout(xml: string): Promise<string> {
       );
       const centerX = Math.round(source.x + sourceBounds.width / 2);
 
-      element.set(
-        "waypoint",
-        waypointsOf([
-          { x: Math.round(source.x + sourceBounds.width), y: startY },
-          { x: loopRight, y: startY },
-          { x: loopRight, y: loopBottom },
-          { x: centerX, y: loopBottom },
-          { x: centerX, y: Math.round(source.y + sourceBounds.height) },
-        ]),
-      );
+      const loop: Point[] = [
+        { x: Math.round(source.x + sourceBounds.width), y: startY },
+        { x: loopRight, y: startY },
+        { x: loopRight, y: loopBottom },
+        { x: centerX, y: loopBottom },
+        { x: centerX, y: Math.round(source.y + sourceBounds.height) },
+      ];
+
+      // The loop has to be reserved like any other route, otherwise later edges
+      // pick a channel that runs straight through it.
+      rememberRoute(loop);
+      element.set("waypoint", waypointsOf(loop));
       continue;
     }
 
@@ -1144,7 +1760,7 @@ export async function applyLaneLayout(xml: string): Promise<string> {
   plane.set("planeElement", [...laneShapes, ...keptElements]);
 
   const { xml: laneXml } = await moddle.toXML(definitions, { format: true });
-  return laneXml;
+  return await applyDataAssociationLayout(laneXml);
 }
 export async function diagramToLaidOutXml(value: unknown): Promise<string> {
   const input = parseDiagramInput(value);

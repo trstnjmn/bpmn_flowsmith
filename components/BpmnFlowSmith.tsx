@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { ChangeEvent, KeyboardEvent } from "react";
 import type Canvas from "diagram-js/lib/core/Canvas";
 import {
@@ -38,7 +38,181 @@ type RenderSummary = {
   lanes: number | null;
 };
 
-const QWENCODER_SYSTEM_PROMPT = `You are a high-precision systems architect specializing in Business Process Model and Notation (BPMN 2.0).
+type OutputLanguage = "en" | "de";
+
+const OUTPUT_LANGUAGE_STORAGE_KEY = "flowsmith.outputLanguage";
+const OUTPUT_LANGUAGE_EVENT = "flowsmith.outputLanguageChange";
+const DEFAULT_OUTPUT_LANGUAGE: OutputLanguage = "en";
+const OUTPUT_LANGUAGES: readonly OutputLanguage[] = ["en", "de"];
+
+function readStoredOutputLanguage(): OutputLanguage {
+  try {
+    const stored = window.localStorage.getItem(OUTPUT_LANGUAGE_STORAGE_KEY);
+
+    if (stored !== null && OUTPUT_LANGUAGES.includes(stored as OutputLanguage)) {
+      return stored as OutputLanguage;
+    }
+  } catch {
+    // Storage can be unavailable (private mode, blocked cookies); the default stands.
+  }
+
+  return DEFAULT_OUTPUT_LANGUAGE;
+}
+
+function subscribeToOutputLanguage(onStoreChange: () => void): () => void {
+  // "storage" covers other tabs; the custom event covers this tab, because a
+  // localStorage write never notifies its own writer.
+  window.addEventListener("storage", onStoreChange);
+  window.addEventListener(OUTPUT_LANGUAGE_EVENT, onStoreChange);
+
+  return () => {
+    window.removeEventListener("storage", onStoreChange);
+    window.removeEventListener(OUTPUT_LANGUAGE_EVENT, onStoreChange);
+  };
+}
+
+function storeOutputLanguage(language: OutputLanguage): void {
+  try {
+    window.localStorage.setItem(OUTPUT_LANGUAGE_STORAGE_KEY, language);
+  } catch {
+    // A failed write only costs us the persistence, not the setting itself.
+  }
+
+  window.dispatchEvent(new Event(OUTPUT_LANGUAGE_EVENT));
+}
+
+/**
+ * The prompt itself always stays English — only the language of the labels the
+ * LLM is asked to produce is switched, because rule numbering and the schema
+ * must not drift between the two variants.
+ */
+type PromptLanguageRules = {
+  placeholder: string;
+  labelRule: string;
+  conditionRule: string;
+  labelStyleRule: string;
+  processNameRule: string;
+  roleExamples: string;
+  systemExamples: string;
+  example: JsonExampleLabels;
+};
+
+type JsonExampleLabels = {
+  processId: string;
+  processName: string;
+  lanes: readonly [string, string, string];
+  nodes: readonly [
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+  ];
+  conditions: readonly [string, string];
+};
+
+const EN_EXAMPLE: JsonExampleLabels = {
+  processId: "Process_RequestReview",
+  processName: "Request review",
+  lanes: ["Case worker", "Department management", "Ordering system"],
+  nodes: [
+    "Request received",
+    "Review request",
+    "Request valid?",
+    "Grant approval",
+    "Create order",
+    "Order database",
+    "Process completed",
+  ],
+  conditions: ["Yes", "No"],
+};
+
+const DE_EXAMPLE: JsonExampleLabels = {
+  processId: "Process_Antragspruefung",
+  processName: "Antragsprüfung",
+  lanes: ["Sachbearbeiter", "Fachbereichsleitung", "Bestellsystem"],
+  nodes: [
+    "Antrag eingegangen",
+    "Antrag prüfen",
+    "Antrag gültig?",
+    "Freigabe erteilen",
+    "Bestellung anlegen",
+    "Auftragsdatenbank",
+    "Prozess abgeschlossen",
+  ],
+  conditions: ["Ja", "Nein"],
+};
+
+const PROMPT_LANGUAGE_RULES: Record<OutputLanguage, PromptLanguageRules> = {
+  en: {
+    placeholder: "[[PROCESS DESCRIPTION]]",
+    labelRule:
+      "11. Every human-readable string (processName, lane names, node labels, edge conditions) MUST be written in ENGLISH. Only those strings use English — this instruction and your reasoning stay in English.",
+    conditionRule:
+      '19. An "exclusiveGateway" has at least two outgoing edges. EACH of them MUST carry a "condition" in English (for example "Yes", "No", "Valid", "Amount over 1,000 EUR"), and the conditions must be mutually exclusive and together cover every case.',
+    labelStyleRule:
+      '22. Keep labels short: at most five words, no quotation marks, no line breaks, no markup. Tasks as verb plus object ("Review request"), gateways as a question ("Request valid?"), events as a completed state ("Request received", "Process completed").',
+    processNameRule:
+      '24. "processId" is an XML-safe identifier: starts with a letter, contains only letters, digits, and underscores, no spaces. "processName" is the English process name in the singular.',
+    roleExamples: '"Case worker", "Team lead", "Admins", "Accounting"',
+    systemExamples: '"Ordering system", "Mail service", "Cronjob"',
+    example: EN_EXAMPLE,
+  },
+  de: {
+    placeholder: "[[PROZESSBESCHREIBUNG]]",
+    labelRule:
+      "11. Every human-readable string (processName, lane names, node labels, edge conditions) MUST be written in GERMAN. Only those strings use German — this instruction and your reasoning stay in English.",
+    conditionRule:
+      '19. An "exclusiveGateway" has at least two outgoing edges. EACH of them MUST carry a "condition" in German (for example "Ja", "Nein", "Gültig", "Betrag über 1.000 Euro"), and the conditions must be mutually exclusive and together cover every case.',
+    labelStyleRule:
+      '22. Keep labels short: at most five words, no quotation marks, no line breaks, no markup. Tasks as verb plus object ("Antrag prüfen"), gateways as a question ("Antrag gültig?"), events as a completed state ("Antrag eingegangen", "Prozess abgeschlossen").',
+    processNameRule:
+      '24. "processId" is an XML-safe identifier: starts with a letter, contains only letters, digits, and underscores, no spaces. "processName" is the German process name in the singular.',
+    roleExamples: '"Sachbearbeiter", "Teamleiter", "Admins", "Buchhaltung"',
+    systemExamples: '"Bestellsystem", "Mailversand", "Cronjob"',
+    example: DE_EXAMPLE,
+  },
+};
+
+function buildJsonExample(labels: JsonExampleLabels): string {
+  return `{
+  "processId": "${labels.processId}",
+  "processName": "${labels.processName}",
+  "lanes": [
+    { "id": "lane_1", "name": "${labels.lanes[0]}" },
+    { "id": "lane_2", "name": "${labels.lanes[1]}" },
+    { "id": "lane_3", "name": "${labels.lanes[2]}" }
+  ],
+  "nodes": [
+    { "id": "start_1", "type": "startEvent", "label": "${labels.nodes[0]}", "laneId": "lane_1" },
+    { "id": "task_1", "type": "userTask", "label": "${labels.nodes[1]}", "laneId": "lane_1" },
+    { "id": "gw_1", "type": "exclusiveGateway", "label": "${labels.nodes[2]}", "laneId": "lane_1" },
+    { "id": "task_2", "type": "userTask", "label": "${labels.nodes[3]}", "laneId": "lane_2" },
+    { "id": "task_3", "type": "serviceTask", "label": "${labels.nodes[4]}", "laneId": "lane_3" },
+    { "id": "store_1", "type": "dataStoreReference", "label": "${labels.nodes[5]}" },
+    { "id": "end_1", "type": "endEvent", "label": "${labels.nodes[6]}", "laneId": "lane_1" }
+  ],
+  "edges": [
+    { "id": "e1", "sourceId": "start_1", "targetId": "task_1" },
+    { "id": "e2", "sourceId": "task_1", "targetId": "gw_1" },
+    { "id": "e3", "sourceId": "gw_1", "targetId": "task_2", "condition": "${labels.conditions[0]}" },
+    { "id": "e4", "sourceId": "gw_1", "targetId": "end_1", "condition": "${labels.conditions[1]}" },
+    { "id": "e5", "sourceId": "task_2", "targetId": "task_3" },
+    { "id": "e6", "sourceId": "task_3", "targetId": "end_1" }
+  ],
+  "dataAssociations": [
+    { "id": "da1", "nodeId": "task_1", "dataNodeId": "store_1", "direction": "read" },
+    { "id": "da2", "nodeId": "task_3", "dataNodeId": "store_1", "direction": "write" }
+  ]
+}`;
+}
+
+function buildSystemPrompt(language: OutputLanguage): string {
+  const rules = PROMPT_LANGUAGE_RULES[language];
+
+  return `You are a high-precision systems architect specializing in Business Process Model and Notation (BPMN 2.0).
 Your single task: turn a real-world business process into a strictly valid JSON object. That JSON is converted automatically into BPMN 2.0 XML, laid out automatically, and rendered as an editable diagram. Your final message must be that JSON and nothing else.
 
 ## 1. MANDATORY PROJECT EXPLORATION
@@ -60,8 +234,8 @@ Tool calls, file reads, and reasoning before you answer are allowed and expected
 8. Reply with EXACTLY ONE JSON object and nothing else. The first character of your final message must be "{" and the last character must be "}". Never open with a sentence, never write "Based on", "Here is", "Sure", "I found", "Note" or similar, and never append a summary, explanation, or file list after the closing brace.
 9. No comments, no commented-out lines, no trailing comma after the last entry, no single quotes — double quotes only.
 10. Use exactly the keys defined below. No additional fields, no renamed fields, no nested objects.
-11. Every human-readable string (processName, lane names, node labels, edge conditions) MUST be written in GERMAN. Only those strings are German — this instruction and your reasoning stay in English.
-12. Keep all technical identifiers in English ASCII. IDs must never contain umlauts, ß, spaces, or hyphens, even when the label is German.
+${rules.labelRule}
+12. Keep all technical identifiers in English ASCII. IDs must never contain umlauts, ß, spaces, or hyphens.
 13. If the description is ambiguous, choose the most plausible domain assumption and do not comment on it.
 
 ## 3. SEMANTIC RULES
@@ -76,74 +250,66 @@ Tool calls, file reads, and reasoning before you answer are allowed and expected
 
 ## 3b. ROLES AND LANES
 - Lanes are rendered as real BPMN swimlanes. The "lanes" array therefore describes who acts, not just a grouping.
-- At least one lane MUST be a concrete human role taken from the project (for example "Sachbearbeiter", "Teamleiter", "Admins", "Buchhaltung"). A process with human work steps always has at least one human role lane.
+- At least one lane MUST be a concrete human role taken from the project (for example ${rules.roleExamples}). A process with human work steps always has at least one human role lane.
 - Name human lanes after the actual role found in the code — role enums, permission checks, authorisation decorators, admin flags, or controller guards. Derive the name from that evidence, not from the request wording alone.
-- Name system lanes after the concrete actor: the service, job, queue, or integration that performs the work (for example "Bestellsystem", "Mailversand", "Cronjob"). Never merge different systems into one "System" lane.
+- Name system lanes after the concrete actor: the service, job, queue, or integration that performs the work (for example ${rules.systemExamples}). Never merge different systems into one "System" lane.
 - FORBIDDEN lane names: "Benutzer", "User", "Kunde", "Actor", "Participants", "Various", "Other", "Sonstige", "Unbekannt". Generic placeholders destroy the value of the swimlanes.
 - Two lanes are only justified when the actors really differ. Do not invent an extra role to fill a gap, and do not split one role into several lanes.
 - Every "userTask" MUST sit in a human role lane; every "serviceTask", "scriptTask", "sendTask", and "businessRuleTask" MUST sit in a system lane. Keep that mapping consistent.
 - Put the lane of the acting role on every node, not the lane of the system that triggered the step.
 - Order the lanes the way the process moves through them: receiving role first, then the roles that take over, with system lanes at the position where the automation happens.
-19. An "exclusiveGateway" has at least two outgoing edges. EACH of them MUST carry a "condition" in German (for example "Ja", "Nein", "Gültig", "Betrag über 1.000 Euro"), and the conditions must be mutually exclusive and together cover every case.
+${rules.conditionRule}
 20. A "parallelGateway" used as a split has two or more outgoing edges WITHOUT a "condition".
 21. Every edge needs a unique "id" plus "sourceId" and "targetId" that both reference existing nodes. A condition belongs to the edge's "condition" field only, never to a node label.
-22. Keep labels short: at most five words, no quotation marks, no line breaks, no markup. Tasks as verb plus object ("Antrag prüfen"), gateways as a question ("Antrag gültig?"), events as a completed state ("Antrag eingegangen", "Prozess abgeschlossen").
+${rules.labelStyleRule}
+
+## 3c. DATA AND DATA STORES
+- "dataStoreReference" = a database, data warehouse, file store, or external system that persists data across process runs. "dataObjectReference" = a short-lived piece of information that only exists inside this process (a form, a generated PDF, a parsed payload).
+- Add such a node ONLY when the description or the evidence really mentions that data. Never decorate a diagram with databases that play no role in the described process.
+- A data node MUST NOT have a "laneId": a BPMN lane may only contain flow nodes (events, tasks, gateways), so data elements sit outside the lanes. Putting a database INTO a system lane is FORBIDDEN — model the system that USES the database as its own lane, and the database itself as a data node next to the steps that read or write it.
+- A data node MUST NOT appear in "edges": a sequence flow only connects flow nodes. Use "dataAssociations" instead.
+- "dataAssociations" links a step to a data node: { "id", "nodeId", "dataNodeId", "direction" }. "direction" is "read" when the step consumes the data and "write" when it produces data into it.
+- Only "userTask", "serviceTask", "manualTask", "scriptTask", "sendTask", "receiveTask", "businessRuleTask", "subProcess", and "callActivity" may carry a data association. Events and gateways cannot.
+- Every data node you add MUST be connected by at least one data association, and every data association MUST reference a data node that exists. An unexplained floating database is worse than no database.
 
 ## 4. SCHEMA RULES
 23. IDs are snake_case and may only contain a-z, 0-9, and "_": no spaces, no hyphens, no leading digit. IDs are unique across the whole JSON and carry a role prefix (start_1, task_1, gw_1, end_1, e1).
-24. "processId" is an XML-safe identifier: starts with a letter, contains only letters, digits, and underscores, no spaces. "processName" is the German process name in the singular.
-25. Array order: "lanes" first, then "nodes" in execution order, then "edges".
+${rules.processNameRule}
+25. Array order: "lanes" first, then "nodes" in execution order, then "edges", then "dataAssociations".
+26. "dataAssociations" is optional. Omit the key entirely when the process has no data elements.
 
 ## 5. JSON SCHEMA
-{
-  "processId": "Process_Antragspruefung",
-  "processName": "Antragsprüfung",
-  "lanes": [
-    { "id": "lane_1", "name": "Sachbearbeiter" },
-    { "id": "lane_2", "name": "Fachbereichsleitung" },
-    { "id": "lane_3", "name": "Bestellsystem" }
-  ],
-  "nodes": [
-    { "id": "start_1", "type": "startEvent", "label": "Antrag eingegangen", "laneId": "lane_1" },
-    { "id": "task_1", "type": "userTask", "label": "Antrag prüfen", "laneId": "lane_1" },
-    { "id": "gw_1", "type": "exclusiveGateway", "label": "Antrag gültig?", "laneId": "lane_1" },
-    { "id": "task_2", "type": "userTask", "label": "Freigabe erteilen", "laneId": "lane_2" },
-    { "id": "task_3", "type": "serviceTask", "label": "Bestellung anlegen", "laneId": "lane_3" },
-    { "id": "end_1", "type": "endEvent", "label": "Prozess abgeschlossen", "laneId": "lane_1" }
-  ],
-  "edges": [
-    { "id": "e1", "sourceId": "start_1", "targetId": "task_1" },
-    { "id": "e2", "sourceId": "task_1", "targetId": "gw_1" },
-    { "id": "e3", "sourceId": "gw_1", "targetId": "task_2", "condition": "Ja" },
-    { "id": "e4", "sourceId": "gw_1", "targetId": "end_1", "condition": "Nein" },
-    { "id": "e5", "sourceId": "task_2", "targetId": "task_3" },
-    { "id": "e6", "sourceId": "task_3", "targetId": "end_1" }
-  ]
-}
+${buildJsonExample(rules.example)}
 
 This example illustrates the structure only. Copy NONE of its content, ids, labels, or conditions. Model the process from the project evidence and the description at the end of this instruction.
 
 ## 6. PROCESS DESCRIPTION
 Replace the placeholder line below with the business process to model, then output only the JSON:
-[[PROZESSBESCHREIBUNG]]`;
+${rules.placeholder}`;
+}
 
-const GUIDE_STEPS = [
-  {
-    title: "Copy the system prompt",
-    description:
-      "The button below puts the strict BPMN JSON prompt on your clipboard — replace [[PROZESSBESCHREIBUNG]] with your German process description.",
-  },
-  {
-    title: "Paste it into your OpenCode LLM",
-    description:
-      "Send the prompt plus your process description to the LLM and let it return the JSON structure.",
-  },
-  {
-    title: "Paste the JSON and generate",
-    description:
-      'Paste the JSON into the editor and click "Generate & Edit Diagram".',
-  },
-] as const;
+/**
+ * The guide names the same placeholder the prompt uses, so switching the
+ * language never leaves the instructions pointing at a token that is not there.
+ */
+function buildGuideSteps(placeholder: string) {
+  return [
+    {
+      title: "Copy the system prompt",
+      description: `The button below puts the strict BPMN JSON prompt on your clipboard — replace ${placeholder} with your process description. The "Output language" selector decides whether the LLM writes the labels in English or German.`,
+    },
+    {
+      title: "Paste it into your OpenCode LLM",
+      description:
+        "Send the prompt plus your process description to the LLM and let it return the JSON structure.",
+    },
+    {
+      title: "Paste the JSON and generate",
+      description:
+        'Paste the JSON into the editor and click "Generate & Edit Diagram".',
+    },
+  ] as const;
+}
 
 function downloadBpmn(
   xml: string,
@@ -334,6 +500,14 @@ export default function BpmnFlowSmith() {
   const [guideOpen, setGuideOpen] = useState(false);
   const [promptCopied, setPromptCopied] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  // Read through an external store rather than in an effect: the page is
+  // statically prerendered, so the server must keep seeing the default while
+  // the client restores the stored choice.
+  const outputLanguage = useSyncExternalStore(
+    subscribeToOutputLanguage,
+    readStoredOutputLanguage,
+    () => DEFAULT_OUTPUT_LANGUAGE,
+  );
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const modelerRef = useRef<BpmnModelerInstance | null>(null);
@@ -464,7 +638,7 @@ export default function BpmnFlowSmith() {
 
   const handleCopyPrompt = useCallback(async () => {
     try {
-      await copyToClipboard(QWENCODER_SYSTEM_PROMPT);
+      await copyToClipboard(buildSystemPrompt(outputLanguage));
       setPromptCopied(true);
 
       if (copyTimerRef.current !== null) {
@@ -477,7 +651,7 @@ export default function BpmnFlowSmith() {
     } catch (thrown) {
       setError(describeError(thrown));
     }
-  }, []);
+  }, [outputLanguage]);
 
   const handleImportFile = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
@@ -721,17 +895,36 @@ export default function BpmnFlowSmith() {
             </span>
             How to Use
           </button>
-          <button
-            type="button"
-            onClick={() => void handleCopyPrompt()}
-            className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
-              promptCopied
-                ? "bg-emerald-600 text-white"
-                : "border border-zinc-300 text-zinc-800 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
-            }`}
-          >
-            {promptCopied ? "Copied!" : "Copy Prompt"}
-          </button>
+          <div className="flex items-center gap-2">
+            <label
+              htmlFor="flowsmith-output-language"
+              className="whitespace-nowrap text-sm font-medium text-zinc-700 dark:text-zinc-300"
+            >
+              Output language
+            </label>
+            <select
+              id="flowsmith-output-language"
+              value={outputLanguage}
+              onChange={(event) =>
+                storeOutputLanguage(event.target.value as OutputLanguage)
+              }
+              className="rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-800 transition-colors hover:bg-zinc-100 focus:outline-none focus:ring-2 focus:ring-zinc-400 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+            >
+              <option value="en">English</option>
+              <option value="de">Deutsch</option>
+            </select>
+            <button
+              type="button"
+              onClick={() => void handleCopyPrompt()}
+              className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+                promptCopied
+                  ? "bg-emerald-600 text-white"
+                  : "border border-zinc-300 text-zinc-800 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+              }`}
+            >
+              {promptCopied ? "Copied!" : "Copy Prompt"}
+            </button>
+          </div>
         </div>
 
         {guideOpen ? (
@@ -739,7 +932,7 @@ export default function BpmnFlowSmith() {
             id="flowsmith-guide"
             className="grid max-h-40 gap-4 overflow-y-auto border-t border-zinc-200 px-4 py-3 text-sm sm:grid-cols-3 dark:border-zinc-800"
           >
-            {GUIDE_STEPS.map((step, index) => (
+            {buildGuideSteps(PROMPT_LANGUAGE_RULES[outputLanguage].placeholder).map((step, index) => (
               <li key={step.title} className="flex gap-3">
                 <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-zinc-900 text-xs font-semibold text-white dark:bg-zinc-100 dark:text-zinc-900">
                   {index + 1}

@@ -1,4 +1,5 @@
 import { BpmnModdle, ModdleElement } from "bpmn-moddle";
+import { collectDataAssociationLinks } from "./bpmn-diagram";
 
 /**
  * Mermaid has fewer shapes than BPMN, so several BPMN element types share a
@@ -251,6 +252,29 @@ export async function bpmnXmlToMermaid(xml: string): Promise<string> {
           : `${source} --> ${target}`;
 
       lines.push(`  ${arrow}`);
+    }
+  }
+
+  // A data association moves data, not control flow, so it becomes a dotted
+  // link. Reading fills the task from the data element, writing hands the result
+  // over to it — that is the direction the arrow points in.
+  const associations = collectDataAssociationLinks(rootElement).filter(
+    (link) =>
+      identifierById.has(link.nodeId) && identifierById.has(link.dataNodeId),
+  );
+
+  if (associations.length > 0) {
+    lines.push("");
+
+    for (const link of associations) {
+      const node = identifierById.get(link.nodeId) as string;
+      const data = identifierById.get(link.dataNodeId) as string;
+
+      lines.push(
+        link.direction === "read"
+          ? `  ${data} -.-> ${node}`
+          : `  ${node} -.-> ${data}`,
+      );
     }
   }
 

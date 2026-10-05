@@ -22,6 +22,11 @@ type BpmnModelerInstance = InstanceType<
 
 type ResettableModeler = BpmnModelerInstance & { clear(): void };
 
+type ImageFormat = "png" | "svg";
+type DiagramFormat = "bpmn" | "xml";
+
+const IMAGE_SCALE = 2;
+
 type Status = "idle" | "busy" | "ready" | "error";
 
 type RenderSummary = {
@@ -41,7 +46,7 @@ Do NOT guess the process from general knowledge. Investigate the project first �
 2. Search for evidence of the process, for example: state machines and status enums, workflow and orchestration code, API routes, controllers and handlers, services, scheduled jobs and queue consumers, domain entities and database tables, role and permission definitions, notification or mail sending, existing BPMN/DMN files, and documentation.
 3. Drive the search from the domain nouns of the request (entities, verbs, statuses, screens) and from the technical terms behind it. Read the files that actually contain the logic, not just the entry points.
 4. Translate what you find into the model:
-   - every human role, external system, or service boundary becomes one lane;
+   - every concrete human role, external system, or service boundary becomes one lane with a specific name (see section 3b);
    - every distinct step of the real code path becomes one node, listed in execution order;
    - every branch, decision, retry, escalation, approval, or parallel path becomes a gateway;
    - state transitions and status changes are the strongest signal for where nodes and gateways belong.
@@ -67,6 +72,17 @@ Tool calls, file reads, and reasoning before you answer are allowed and expected
     - "serviceTask" = an automated action performed by a system, script, job, or integration.
     - If the process strictly requires something else, use "subProcess" (nested process), "manualTask", "scriptTask", "sendTask", "receiveTask", or "businessRuleTask". Do not use any type beyond these.
 18. Every node needs a "laneId" that references a lane from the "lanes" array. Every lane must contain at least one node — empty lanes are forbidden.
+
+## 3b. ROLES AND LANES
+- Lanes are rendered as real BPMN swimlanes. The "lanes" array therefore describes who acts, not just a grouping.
+- At least one lane MUST be a concrete human role taken from the project (for example "Sachbearbeiter", "Teamleiter", "Admins", "Buchhaltung"). A process with human work steps always has at least one human role lane.
+- Name human lanes after the actual role found in the code — role enums, permission checks, authorisation decorators, admin flags, or controller guards. Derive the name from that evidence, not from the request wording alone.
+- Name system lanes after the concrete actor: the service, job, queue, or integration that performs the work (for example "Bestellsystem", "Mailversand", "Cronjob"). Never merge different systems into one "System" lane.
+- FORBIDDEN lane names: "Benutzer", "User", "Kunde", "Actor", "Participants", "Various", "Other", "Sonstige", "Unbekannt". Generic placeholders destroy the value of the swimlanes.
+- Two lanes are only justified when the actors really differ. Do not invent an extra role to fill a gap, and do not split one role into several lanes.
+- Every "userTask" MUST sit in a human role lane; every "serviceTask", "scriptTask", "sendTask", and "businessRuleTask" MUST sit in a system lane. Keep that mapping consistent.
+- Put the lane of the acting role on every node, not the lane of the system that triggered the step.
+- Order the lanes the way the process moves through them: receiving role first, then the roles that take over, with system lanes at the position where the automation happens.
 19. An "exclusiveGateway" has at least two outgoing edges. EACH of them MUST carry a "condition" in German (for example "Ja", "Nein", "Gültig", "Betrag über 1.000 Euro"), and the conditions must be mutually exclusive and together cover every case.
 20. A "parallelGateway" used as a split has two or more outgoing edges WITHOUT a "condition".
 21. Every edge needs a unique "id" plus "sourceId" and "targetId" that both reference existing nodes. A condition belongs to the edge's "condition" field only, never to a node label.
@@ -83,13 +99,15 @@ Tool calls, file reads, and reasoning before you answer are allowed and expected
   "processName": "Antragsprüfung",
   "lanes": [
     { "id": "lane_1", "name": "Sachbearbeiter" },
-    { "id": "lane_2", "name": "System" }
+    { "id": "lane_2", "name": "Fachbereichsleitung" },
+    { "id": "lane_3", "name": "Bestellsystem" }
   ],
   "nodes": [
     { "id": "start_1", "type": "startEvent", "label": "Antrag eingegangen", "laneId": "lane_1" },
     { "id": "task_1", "type": "userTask", "label": "Antrag prüfen", "laneId": "lane_1" },
     { "id": "gw_1", "type": "exclusiveGateway", "label": "Antrag gültig?", "laneId": "lane_1" },
-    { "id": "task_2", "type": "serviceTask", "label": "Bestätigung senden", "laneId": "lane_2" },
+    { "id": "task_2", "type": "userTask", "label": "Freigabe erteilen", "laneId": "lane_2" },
+    { "id": "task_3", "type": "serviceTask", "label": "Bestellung anlegen", "laneId": "lane_3" },
     { "id": "end_1", "type": "endEvent", "label": "Prozess abgeschlossen", "laneId": "lane_1" }
   ],
   "edges": [
@@ -97,7 +115,8 @@ Tool calls, file reads, and reasoning before you answer are allowed and expected
     { "id": "e2", "sourceId": "task_1", "targetId": "gw_1" },
     { "id": "e3", "sourceId": "gw_1", "targetId": "task_2", "condition": "Ja" },
     { "id": "e4", "sourceId": "gw_1", "targetId": "end_1", "condition": "Nein" },
-    { "id": "e5", "sourceId": "task_2", "targetId": "end_1" }
+    { "id": "e5", "sourceId": "task_2", "targetId": "task_3" },
+    { "id": "e6", "sourceId": "task_3", "targetId": "end_1" }
   ]
 }
 
@@ -125,10 +144,20 @@ const GUIDE_STEPS = [
   },
 ] as const;
 
-function downloadBpmn(xml: string, fileName: string): void {
-  const blob = new Blob([xml], {
-    type: "application/bpmn20-xml;charset=utf-8",
-  });
+function downloadBpmn(
+  xml: string,
+  fileName: string,
+  format: DiagramFormat,
+): void {
+  downloadBlob(
+    new Blob([xml], {
+      type: format === "xml" ? "application/xml;charset=utf-8" : "application/bpmn20-xml;charset=utf-8",
+    }),
+    `${fileName.replace(/\.(bpmn|xml)$/i, "")}.${format}`,
+  );
+}
+
+function downloadBlob(blob: Blob, fileName: string): void {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
 
@@ -138,6 +167,62 @@ function downloadBpmn(xml: string, fileName: string): void {
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+}
+
+async function svgToPngBlob(svg: string, scale: number): Promise<Blob> {
+  const image = new Image();
+  const url = URL.createObjectURL(
+    new Blob([svg], { type: "image/svg+xml;charset=utf-8" }),
+  );
+
+  try {
+    const loaded = new Promise<void>((resolve, reject) => {
+      image.onload = () => {
+        resolve();
+      };
+      image.onerror = () => {
+        reject(new Error("The diagram could not be rendered as an image."));
+      };
+    });
+
+    image.src = url;
+    await loaded;
+
+    const width = image.naturalWidth || image.width;
+    const height = image.naturalHeight || image.height;
+
+    if (!width || !height) {
+      throw new Error("The diagram has no size to export.");
+    }
+
+    const canvas = document.createElement("canvas");
+
+    canvas.width = Math.max(1, Math.round(width * scale));
+    canvas.height = Math.max(1, Math.round(height * scale));
+
+    const context = canvas.getContext("2d");
+
+    if (!context) {
+      throw new Error("PNG export is not available in this browser.");
+    }
+
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.setTransform(scale, 0, 0, scale, 0, 0);
+    context.drawImage(image, 0, 0, width, height);
+
+    return await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((blob) => {
+        if (blob) {
+          resolve(blob);
+        } else {
+          reject(new Error("PNG export failed."));
+        }
+      }, "image/png");
+    });
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 async function copyToClipboard(text: string): Promise<void> {
@@ -163,50 +248,58 @@ async function copyToClipboard(text: string): Promise<void> {
 }
 
 const SAMPLE_INPUT = {
-  processId: "Process_1",
-  processName: "Application Review",
+  processId: "Process_Antragspruefung",
+  processName: "Antragsprüfung",
   lanes: [
-    { id: "lane_1", name: "Clerk" },
-    { id: "lane_2", name: "System" },
+    { id: "lane_1", name: "Sachbearbeiter" },
+    { id: "lane_2", name: "Fachbereichsleitung" },
+    { id: "lane_3", name: "Bestellsystem" },
   ],
   nodes: [
     {
       id: "start_1",
       type: "startEvent",
-      label: "Application Received",
+      label: "Antrag eingegangen",
       laneId: "lane_1",
     },
     {
       id: "task_1",
       type: "userTask",
-      label: "Review Application",
+      label: "Antrag prüfen",
       laneId: "lane_1",
     },
     {
       id: "gw_1",
       type: "exclusiveGateway",
-      label: "Is Valid?",
+      label: "Antrag gültig?",
       laneId: "lane_1",
     },
     {
       id: "task_2",
-      type: "serviceTask",
-      label: "Send Confirmation",
+      type: "userTask",
+      label: "Freigabe erteilen",
       laneId: "lane_2",
+    },
+    {
+      id: "task_3",
+      type: "serviceTask",
+      label: "Bestellung anlegen",
+      laneId: "lane_3",
     },
     {
       id: "end_1",
       type: "endEvent",
-      label: "Process Completed",
+      label: "Prozess abgeschlossen",
       laneId: "lane_1",
     },
   ],
   edges: [
     { id: "e1", sourceId: "start_1", targetId: "task_1" },
     { id: "e2", sourceId: "task_1", targetId: "gw_1" },
-    { id: "e3", sourceId: "gw_1", targetId: "task_2", condition: "Yes" },
-    { id: "e4", sourceId: "gw_1", targetId: "end_1", condition: "No" },
-    { id: "e5", sourceId: "task_2", targetId: "end_1" },
+    { id: "e3", sourceId: "gw_1", targetId: "task_2", condition: "Ja" },
+    { id: "e4", sourceId: "gw_1", targetId: "end_1", condition: "Nein" },
+    { id: "e5", sourceId: "task_2", targetId: "task_3" },
+    { id: "e6", sourceId: "task_3", targetId: "end_1" },
   ],
 } as const;
 
@@ -444,32 +537,76 @@ export default function BpmnFlowSmith() {
     [],
   );
 
-  const handleExport = useCallback(async () => {
-    const pendingModeler = modelerPromiseRef.current;
-    const modeler = pendingModeler ? await pendingModeler : null;
+  const handleExport = useCallback(
+    async (format: DiagramFormat) => {
+      const pendingModeler = modelerPromiseRef.current;
+      const modeler = pendingModeler ? await pendingModeler : null;
 
-    if (!modeler) {
-      return;
-    }
-
-    setIsExporting(true);
-    setError(null);
-
-    try {
-      const { xml: savedXml } = await modeler.saveXML({ format: true });
-
-      if (!savedXml) {
-        throw new Error("There is no diagram to export yet.");
+      if (!modeler) {
+        return;
       }
 
-      setXml(savedXml);
-      downloadBpmn(savedXml, summary?.fileName ?? "process.bpmn");
-    } catch (thrown) {
-      setError(describeError(thrown));
-    } finally {
-      setIsExporting(false);
-    }
-  }, [summary]);
+      setIsExporting(true);
+      setError(null);
+
+      try {
+        const { xml: savedXml } = await modeler.saveXML({ format: true });
+
+        if (!savedXml) {
+          throw new Error("There is no diagram to export yet.");
+        }
+
+        setXml(savedXml);
+        downloadBpmn(savedXml, summary?.fileName ?? "process.bpmn", format);
+      } catch (thrown) {
+        setError(describeError(thrown));
+      } finally {
+        setIsExporting(false);
+      }
+    },
+    [summary],
+  );
+
+  const handleExportImage = useCallback(
+    async (format: ImageFormat) => {
+      const pendingModeler = modelerPromiseRef.current;
+      const modeler = pendingModeler ? await pendingModeler : null;
+
+      if (!modeler) {
+        return;
+      }
+
+      setIsExporting(true);
+      setError(null);
+
+      try {
+        const { svg } = await modeler.saveSVG();
+
+        if (!svg) {
+          throw new Error("There is no diagram to export yet.");
+        }
+
+        const base = (summary?.fileName ?? "process").replace(/\.bpmn$/i, "");
+
+        if (format === "svg") {
+          downloadBlob(
+            new Blob([svg], { type: "image/svg+xml;charset=utf-8" }),
+            `${base}.svg`,
+          );
+        } else {
+          downloadBlob(
+            await svgToPngBlob(svg, IMAGE_SCALE),
+            `${base}.png`,
+          );
+        }
+      } catch (thrown) {
+        setError(describeError(thrown));
+      } finally {
+        setIsExporting(false);
+      }
+    },
+    [summary],
+  );
 
   const handleLoadSample = useCallback(() => {
     setJsonInput(DEFAULT_JSON);
@@ -595,15 +732,26 @@ export default function BpmnFlowSmith() {
             <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
-                onClick={() => void handleExport()}
+                onClick={() => void handleExport("bpmn")}
                 disabled={!summary || isBusy || isExporting}
                 className={btnSecondary}
               >
                 {isExporting ? "Exporting…" : "Export .bpmn"}
               </button>
 
+              <button
+                type="button"
+                onClick={() => void handleExport("xml")}
+                disabled={!summary || isBusy || isExporting}
+                className={btnSecondary}
+              >
+                Export .xml
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
               <label
-                className={`${btnSecondary} cursor-pointer focus-within:ring-2 focus-within:ring-zinc-900/30 dark:focus-within:ring-zinc-100/30 ${
+                className={`${btnSecondary} col-span-2 cursor-pointer focus-within:ring-2 focus-within:ring-zinc-900/30 dark:focus-within:ring-zinc-100/30 ${
                   isBusy || !modelerReady ? "pointer-events-none opacity-50" : ""
                 }`}
               >
@@ -616,6 +764,25 @@ export default function BpmnFlowSmith() {
                   className="sr-only"
                 />
               </label>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => void handleExportImage("png")}
+                disabled={!summary || isBusy || isExporting}
+                className={btnSecondary}
+              >
+                Export PNG
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleExportImage("svg")}
+                disabled={!summary || isBusy || isExporting}
+                className={btnSecondary}
+              >
+                Export SVG
+              </button>
             </div>
 
             <div className="grid grid-cols-2 gap-2">

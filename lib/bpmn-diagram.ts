@@ -74,6 +74,96 @@ function isFlowNodeKind(value: string): value is FlowNodeKind {
   return Object.prototype.hasOwnProperty.call(NODE_TYPE_BY_KIND, value);
 }
 
+function sliceBalancedObject(text: string, startIndex: number): string | null {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = startIndex; index < text.length; index += 1) {
+    const character = text[index];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (character === '"') {
+      inString = true;
+    } else if (character === "{") {
+      depth += 1;
+    } else if (character === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return text.slice(startIndex, index + 1);
+      }
+    }
+  }
+
+  return null;
+}
+
+export function extractJsonPayload(raw: string): string {
+  const text = raw.trim();
+
+  if (!text) {
+    fail(
+      "The editor is empty. Paste the JSON output of the LLM, then generate again.",
+    );
+  }
+
+  const candidates: string[] = [];
+  const fencePattern = /```[ \t]*[a-zA-Z0-9_+-]*[ \t]*\r?\n([\s\S]*?)```/g;
+  let fenceMatch = fencePattern.exec(text);
+
+  while (fenceMatch !== null) {
+    candidates.push(fenceMatch[1]);
+    fenceMatch = fencePattern.exec(text);
+  }
+
+  candidates.push(text);
+
+  for (const candidate of candidates) {
+    const trimmed = candidate.trim();
+    const startIndex = trimmed.indexOf("{");
+
+    if (startIndex === -1) {
+      continue;
+    }
+
+    if (startIndex === 0) {
+      try {
+        JSON.parse(trimmed);
+        return trimmed;
+      } catch {
+        // fall through to the balanced scan below
+      }
+    }
+
+    const balanced = sliceBalancedObject(trimmed, startIndex);
+
+    if (balanced === null) {
+      continue;
+    }
+
+    try {
+      JSON.parse(balanced);
+      return balanced;
+    } catch {
+      // keep looking in the remaining candidates
+    }
+  }
+
+  fail(
+    'No JSON object found in the editor. The text must contain a BPMN definition with a "processId" and a "nodes" array.',
+  );
+}
+
 function fail(message: string): never {
   throw new DiagramInputError(message);
 }

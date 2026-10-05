@@ -7,6 +7,7 @@ import {
   SUPPORTED_NODE_TYPES,
   DiagramInputError,
   buildBpmnXml,
+  extractJsonPayload,
   layoutBpmnXml,
   parseDiagramInput,
 } from "@/lib/bpmn-diagram";
@@ -47,10 +48,10 @@ Do NOT guess the process from general knowledge. Investigate the project first �
 5. Prefer evidence over assumption. When the request and the code disagree, follow the code and adopt the reading that matches the real implementation.
 6. Never invent steps, roles, or systems that neither the request nor the code supports. Fill a gap only when the request or the implementation makes it unavoidable.
 7. If the project contains nothing relevant, work purely from the request.
-Tool calls, file reads, and short reasoning are allowed and expected. The output rules in section 2 apply to your final message only.
+Tool calls, file reads, and reasoning before you answer are allowed and expected — the flow it describes is how you find the process. None of that reasoning may ever appear in your final message; the output rules in section 2 apply to that final message alone.
 
 ## 2. HARD OUTPUT RULES
-8. Reply with EXACTLY ONE JSON object and nothing else. No markdown, no code fences, no headings, no preamble, no explanation, no summary, no questions.
+8. Reply with EXACTLY ONE JSON object and nothing else. The first character of your final message must be "{" and the last character must be "}". Never open with a sentence, never write "Based on", "Here is", "Sure", "I found", "Note" or similar, and never append a summary, explanation, or file list after the closing brace.
 9. No comments, no commented-out lines, no trailing comma after the last entry, no single quotes — double quotes only.
 10. Use exactly the keys defined below. No additional fields, no renamed fields, no nested objects.
 11. Every human-readable string (processName, lane names, node labels, edge conditions) MUST be written in GERMAN. Only those strings are German — this instruction and your reasoning stay in English.
@@ -331,7 +332,7 @@ export default function BpmnFlowSmith() {
         );
       }
 
-      const input = parseDiagramInput(JSON.parse(jsonInput) as unknown);
+      const input = parseDiagramInput(JSON.parse(extractJsonPayload(jsonInput)) as unknown);
       const rawXml = await buildBpmnXml(input);
       const laidOutXml = await layoutBpmnXml(rawXml);
 

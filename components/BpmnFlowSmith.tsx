@@ -94,6 +94,7 @@ type PromptLanguageRules = {
   processNameRule: string;
   roleExamples: string;
   systemExamples: string;
+  granularityExample: string;
   example: JsonExampleLabels;
 };
 
@@ -158,6 +159,8 @@ const PROMPT_LANGUAGE_RULES: Record<OutputLanguage, PromptLanguageRules> = {
       '24. "processId" is an XML-safe identifier: starts with a letter, contains only letters, digits, and underscores, no spaces. "processName" is the English process name in the singular.',
     roleExamples: '"Case worker", "Team lead", "Admins", "Accounting"',
     systemExamples: '"Ordering system", "Mail service", "Cronjob"',
+    granularityExample:
+      'one method "createOrder" that validates the input, reserves stock and triggers the payment becomes THREE nodes ("Validate input data", "Reserve stock", "Trigger payment"), never the single node "Create order".',
     example: EN_EXAMPLE,
   },
   de: {
@@ -172,6 +175,8 @@ const PROMPT_LANGUAGE_RULES: Record<OutputLanguage, PromptLanguageRules> = {
       '24. "processId" is an XML-safe identifier: starts with a letter, contains only letters, digits, and underscores, no spaces. "processName" is the German process name in the singular.',
     roleExamples: '"Sachbearbeiter", "Teamleiter", "Admins", "Buchhaltung"',
     systemExamples: '"Bestellsystem", "Mailversand", "Cronjob"',
+    granularityExample:
+      'one method "Bestellung anlegen" that validates the input, reserves stock and triggers the payment becomes THREE nodes ("Eingangsdaten validieren", "Bestand reservieren", "Zahlung auslösen"), never the single node "Bestellung anlegen".',
     example: DE_EXAMPLE,
   },
 };
@@ -222,7 +227,7 @@ Do NOT guess the process from general knowledge. Investigate the project first �
 3. Drive the search from the domain nouns of the request (entities, verbs, statuses, screens) and from the technical terms behind it. Read the files that actually contain the logic, not just the entry points.
 4. Translate what you find into the model:
    - every concrete human role, external system, or service boundary becomes one lane with a specific name (see section 3b);
-   - every distinct step of the real code path becomes one node, listed in execution order;
+   - every distinct step of the real code path becomes one node, listed in execution order (section 3d defines what counts as distinct — this is where most diagrams fail);
    - every branch, decision, retry, escalation, approval, or parallel path becomes a gateway;
    - state transitions and status changes are the strongest signal for where nodes and gateways belong.
 5. Prefer evidence over assumption. When the request and the code disagree, follow the code and adopt the reading that matches the real implementation.
@@ -241,7 +246,7 @@ ${rules.labelRule}
 ## 3. SEMANTIC RULES
 14. Exactly one "startEvent" per process. It is the only node without an incoming edge.
 15. At least one "endEvent". Every node must reach an "endEvent" through at least one path.
-16. Every node must be reachable from the "startEvent". No isolated nodes, no dangling nodes, no cycles, and no backward edges unless the description explicitly states a loop.
+16. Every node must be reachable from the "startEvent". No isolated nodes, no dangling nodes, no cycles, and no backward edges unless the description or the evidence explicitly states a loop (see section 3d).
 17. Allowed node types are "startEvent", "endEvent", "userTask", "serviceTask", "exclusiveGateway", and "parallelGateway".
     - "userTask" = a manual action performed by a human.
     - "serviceTask" = an automated action performed by a system, script, job, or integration.
@@ -271,6 +276,22 @@ ${rules.labelStyleRule}
 - "dataAssociations" links a step to a data node: { "id", "nodeId", "dataNodeId", "direction" }. "direction" is "read" when the step consumes the data and "write" when it produces data into it.
 - Only "userTask", "serviceTask", "manualTask", "scriptTask", "sendTask", "receiveTask", "businessRuleTask", "subProcess", and "callActivity" may carry a data association. Events and gateways cannot.
 - Every data node you add MUST be connected by at least one data association, and every data association MUST reference a data node that exists. An unexplained floating database is worse than no database.
+
+## 3d. STEP DEPTH — THE PART THAT DECIDES QUALITY
+A diagram is too coarse the moment one node stands for work the code visibly performs in several steps. Read method bodies, not just their names, and keep splitting until every node is one thing a person could name as a single action.
+- One node is ONE concrete action with ONE clear outcome. If the label needs the word "and", or you cannot say what the node accomplishes, it is two nodes.
+- Each of the following is a signal to emit a node of its own:
+  - every status or state transition — an enum value written, a state machine transition, a status field or column changed;
+  - every write that persists — save, insert, update, delete, transaction commit, file written;
+  - every call that crosses a system boundary — HTTP or RPC client, queue publish, mail or SMS send, webhook call, file upload or download;
+  - every wait — human approval, manual review, handoff to another role, waiting for a third party, a pending state;
+  - every async continuation — scheduled job, queue consumer, callback, polling loop, event handler that resumes the work;
+  - every iteration that performs real work per item.
+- Each of the following is a signal to emit a gateway instead of a node: a validation that can fail, an authorisation or permission check, a branch on status, a retry limit, a timeout, a fallback, an escalation to a human, a rollback or compensation path.
+- Split by evidence, never by imagination: ${rules.granularityExample} An if/else that can only ever take one branch is not a gateway, and no invented micro-step (for example "clear cache" or "write log entry") may become its own node.
+- Loops and retries: an iteration or retry loop visible in the evidence justifies the exception in rule 16. Model it as a gateway with one loop-back edge, never as a second copy of the same nodes.
+- A method whose name hides its work must be opened and read. If you only know the entry point and the method name, you do not know the process yet.
+- Before you answer, verify silently against the files you actually read: every status enum value on the code path appears as a node or a gateway; every persistence call and every external call appears as a node; every failure branch appears as a gateway; every lane holds at least one node; no node label is a file, class, or module name. Fix the model until this holds. None of this verification may ever appear in your answer.
 
 ## 4. SCHEMA RULES
 23. IDs are snake_case and may only contain a-z, 0-9, and "_": no spaces, no hyphens, no leading digit. IDs are unique across the whole JSON and carry a role prefix (start_1, task_1, gw_1, end_1, e1).

@@ -101,6 +101,25 @@ the app rejects such ids up front with a readable message.
 }
 ```
 
+### Step depth and granularity
+
+The schema cannot tell you whether a diagram is superficial — one node named `Create order` next to another
+named `Send invoice` passes every validation rule and still says nothing. Depth therefore lives in the
+prompt (section 3d), which forces the model to read method bodies rather than method names:
+
+- one node is **one concrete action with one clear outcome** — if the label needs the word "and", it is two nodes
+- each of these forces a node of its own: every **status/state transition**, every **persisting write**
+  (`save`, `insert`, `update`, transaction commit), every call that **crosses a system boundary** (HTTP/RPC,
+  queue publish, mail send, file transfer), every **human wait** (approval, review, handoff), every **async
+  continuation** (scheduled job, queue consumer, callback), and every **iteration** doing real work per item
+- each of these forces a **gateway**: a failing validation, an authorisation check, a branch on status, a retry
+  limit, a timeout, a fallback, an escalation, a rollback
+- the split must stay **evidence-based**: an `if/else` that can only take one branch is not a gateway, and no
+  invented micro-step ("clear cache", "write log entry") becomes its own node
+
+A loop or retry visible in the code is modelled as a gateway with one loop-back edge, never as a duplicate of
+the same nodes. The model verifies this silently against the files it read before answering.
+
 ### Lanes and roles
 
 `lanes` are rendered as real BPMN swimlanes, so each entry should be a concrete actor taken from the

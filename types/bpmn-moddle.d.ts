@@ -6,6 +6,13 @@ declare module "bpmn-moddle" {
     set(name: string, value: unknown): void;
   }
 
+  export interface Bounds {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }
+
   export interface ToXMLOptions {
     format?: boolean;
     preamble?: boolean;

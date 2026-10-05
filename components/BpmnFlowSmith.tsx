@@ -11,6 +11,7 @@ import {
   layoutBpmnXml,
   parseDiagramInput,
 } from "@/lib/bpmn-diagram";
+import { bpmnXmlToMermaid, toMermaidMarkdown } from "@/lib/bpmn-mermaid";
 import "bpmn-js/dist/assets/diagram-js.css";
 import "bpmn-js/dist/assets/bpmn-js.css";
 import "bpmn-js/dist/assets/bpmn-font/css/bpmn.css";
@@ -324,6 +325,8 @@ export default function BpmnFlowSmith() {
   const [error, setError] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [xml, setXml] = useState<string | null>(null);
+  const [mermaid, setMermaid] = useState<string | null>(null);
+  const [mermaidCopied, setMermaidCopied] = useState(false);
   const [summary, setSummary] = useState<RenderSummary | null>(null);
   const [modelerReady, setModelerReady] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
@@ -442,6 +445,7 @@ export default function BpmnFlowSmith() {
       modeler.get<Canvas>("canvas", true).zoom("fit-viewport");
 
       setXml(laidOutXml);
+      setMermaid(null);
       setCanvasEdited(false);
       setWarnings(importWarnings.map((warning) => String(warning)));
       setSummary({
@@ -517,6 +521,7 @@ export default function BpmnFlowSmith() {
         modeler.get<Canvas>("canvas", true).zoom("fit-viewport");
 
         setXml(importableXml);
+        setMermaid(null);
         setCanvasEdited(false);
         setWarnings(importWarnings.map((warning) => String(warning)));
         setSummary({
@@ -608,6 +613,57 @@ export default function BpmnFlowSmith() {
     [summary],
   );
 
+  const handleExportMermaid = useCallback(async () => {
+    const pendingModeler = modelerPromiseRef.current;
+    const modeler = pendingModeler ? await pendingModeler : null;
+
+    if (!modeler) {
+      return;
+    }
+
+    setIsExporting(true);
+    setError(null);
+
+    try {
+      const { xml: savedXml } = await modeler.saveXML({ format: true });
+
+      if (!savedXml) {
+        throw new Error("There is no diagram to export yet.");
+      }
+
+      const mermaid = await bpmnXmlToMermaid(savedXml);
+
+      setMermaid(mermaid);
+      downloadBlob(
+        new Blob([mermaid], { type: "text/plain;charset=utf-8" }),
+        `${(summary?.fileName ?? "process").replace(/\.bpmn$/i, "")}.mmd`,
+      );
+    } catch (thrown) {
+      setError(describeError(thrown));
+    } finally {
+      setIsExporting(false);
+    }
+  }, [summary]);
+
+  const handleCopyMermaid = useCallback(async () => {
+    const code = mermaid ?? "";
+
+    if (code.trim().length === 0) {
+      setError("Export Mermaid first so there is code to copy.");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(toMermaidMarkdown(code));
+      setMermaidCopied(true);
+      window.setTimeout(() => setMermaidCopied(false), 2000);
+    } catch {
+      setError(
+        "The clipboard is not available here. Use Export Mermaid to download the code instead.",
+      );
+    }
+  }, [mermaid]);
+
   const handleLoadSample = useCallback(() => {
     setJsonInput(DEFAULT_JSON);
     setError(null);
@@ -619,6 +675,8 @@ export default function BpmnFlowSmith() {
     setError(null);
     setWarnings([]);
     setXml(null);
+    setMermaid(null);
+    setMermaidCopied(false);
     setSummary(null);
     setCanvasEdited(false);
     (modelerRef.current as ResettableModeler | null)?.clear();
@@ -769,6 +827,25 @@ export default function BpmnFlowSmith() {
             <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
+                onClick={() => void handleExportMermaid()}
+                disabled={!summary || isBusy || isExporting}
+                className={btnSecondary}
+              >
+                Export Mermaid
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleCopyMermaid()}
+                disabled={!mermaid || isBusy}
+                className={btnGhost}
+              >
+                {mermaidCopied ? "Copied ✓" : "Copy Markdown"}
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
                 onClick={() => void handleExportImage("png")}
                 disabled={!summary || isBusy || isExporting}
                 className={btnSecondary}
@@ -850,6 +927,22 @@ export default function BpmnFlowSmith() {
               {SUPPORTED_NODE_TYPES.join(", ")}
             </p>
           </details>
+
+          {mermaid ? (
+            <details className="rounded-lg border border-zinc-300 p-3 text-sm text-zinc-700 dark:border-zinc-700 dark:text-zinc-300">
+              <summary className="cursor-pointer font-medium">
+                Mermaid
+                {canvasEdited ? " (canvas edits are not shown here yet)" : ""}
+              </summary>
+              <pre className="mt-2 max-h-64 overflow-auto rounded bg-zinc-100 p-2 font-mono text-xs whitespace-pre dark:bg-zinc-900">
+                {mermaid}
+              </pre>
+              <p className="mt-2 text-xs">
+                Paste this into a <code>```mermaid</code> fence in GitHub or
+                GitLab Markdown. Use Copy Markdown to grab the fenced block.
+              </p>
+            </details>
+          ) : null}
 
           {xml ? (
             <details className="rounded-lg border border-zinc-300 p-3 text-sm text-zinc-700 dark:border-zinc-700 dark:text-zinc-300">

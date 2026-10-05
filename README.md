@@ -52,10 +52,16 @@ Open [http://localhost:3000](http://localhost:3000).
 2. Paste the returned JSON into the **Process definition (JSON)** editor.
 3. Click **Generate & Edit Diagram** (or press `Ctrl`/`⌘` + `Enter`).
 4. Refine the result on the canvas, optionally in fullscreen.
-5. Click **Export .bpmn**, **Export .xml**, **Export PNG** or **Export SVG** to download the current
-   state of the canvas.
+5. Click **Export .bpmn**, **Export .xml**, **Export PNG**, **Export SVG** or **Export Mermaid** to
+   download the current state of the canvas. **Copy Markdown** copies the Mermaid code in a fenced block
+   for GitHub or GitLab.
 
 ## Input schema
+
+Every `id` (`processId`, lanes, nodes, edges) must start with a letter or underscore and may otherwise
+contain letters, digits, `_`, `-`, and `.`. `bpmn-auto-layout` indexes elements by id and cannot resolve
+an id that starts with a digit — it fails with `Cannot read properties of undefined (reading 'di')`, so
+the app rejects such ids up front with a readable message.
 
 ```jsonc
 {
@@ -126,6 +132,48 @@ of the initial page load. All exports use the live canvas and therefore reflect 
 | `.xml` | `saveXML({ format: true })` | identical content as `.xml` for generic XML tooling |
 | `.svg` | `saveSVG()` | vector, keeps the bpmn-js styling |
 | `.png` | `saveSVG()` → `<canvas>` | rasterised at 2×, white background |
+| `.mmd` | XML → Mermaid `flowchart` | plain text, for GitHub/GitLab Markdown |
+
+### Mermaid export
+
+`lib/bpmn-mermaid.ts` converts the current canvas into a Mermaid `flowchart LR`. Lanes become `subgraph`
+blocks, so the swimlane structure survives. **Copy Markdown** puts the whole thing on the clipboard
+already wrapped in a ` ```mermaid ` fence, ready to paste into a GitHub or GitLab Markdown file.
+
+```mermaid
+%% Antragsprüfung
+
+flowchart LR
+  subgraph s_l1["Sachbearbeiter"]
+    n_s1(["Antrag eingegangen"])
+    n_t1["Antrag prüfen"]
+    n_g1{{"Antrag gültig?"}}
+  end
+  subgraph s_l2["Fachbereichsleitung"]
+    n_t2["Freigabe erteilen"]
+  end
+
+  n_s1 --> n_t1
+  n_t1 --> n_g1
+  n_g1 -->|"Ja"| n_t2
+```
+
+Shape mapping. Mermaid offers fewer shapes than BPMN, so several element types share a rendering:
+
+| BPMN | Mermaid shape |
+| --- | --- |
+| `startEvent` | `([…])` stadium |
+| `endEvent` | `((…))` circle |
+| `intermediateThrowEvent`, `intermediateCatchEvent` | `(…)` rounded |
+| `exclusiveGateway`, `inclusiveGateway`, `parallelGateway`, `complexGateway`, `eventBasedGateway` | `{…}` / `{{…}}` |
+| `task`, `userTask`, `manualTask` | `[…]` rectangle |
+| `serviceTask`, `sendTask`, `receiveTask`, `subProcess`, `callActivity` | `[[…]]` subroutine |
+| `scriptTask`, `businessRuleTask` | `[/…/]` parallelogram |
+| `dataObjectReference`, `dataStoreReference` | `[(…)]` cylinder |
+
+Gateway markers (the `+` of a parallel split, the `×` of an exclusive split) have no Mermaid equivalent,
+so gateways differ only in shape. A sequence flow `condition` becomes an edge label. Labels are quoted and
+HTML-escaped, so quotes, `<`, `>` and entity-like `#hash;` sequences are safe.
 
 ## Project structure
 
@@ -138,6 +186,7 @@ components/
   BpmnFlowSmith.tsx             client component: editor, modeler, fullscreen, import/export
 lib/
   bpmn-diagram.ts               JSON validation, BPMN generation, auto-layout + lane-aware layout
+  bpmn-mermaid.ts               BPMN XML → Mermaid flowchart (GitHub/GitLab embed)
 types/
   bpmn-moddle.d.ts              ambient types for bpmn-moddle
   bpmn-auto-layout.d.ts         ambient types for bpmn-auto-layout

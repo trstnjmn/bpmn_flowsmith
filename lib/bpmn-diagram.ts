@@ -245,11 +245,28 @@ function push(
   collection.push(value);
 }
 
+/**
+ * `bpmn-auto-layout` indexes elements by id and dereferences `element.di`
+ * during connection routing. An id that starts with a digit makes that lookup
+ * miss, which surfaces as `Cannot read properties of undefined (reading 'di')`
+ * deep inside the library. Rejecting it here gives a usable message instead.
+ */
+const XML_ID_PATTERN = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
+
+function assertUsableId(id: string, path: string): void {
+  if (!XML_ID_PATTERN.test(id)) {
+    fail(
+      `Invalid id "${id}" at ${path}. Ids must start with a letter or underscore and may only contain letters, digits, "_", "-", and "." — bpmn-auto-layout cannot resolve ids that start with a digit.`,
+    );
+  }
+}
+
 export function parseDiagramInput(value: unknown): DiagramInput {
   const root = asRecord(value, "input");
 
   const processId = asRequiredString(root.processId, "processId");
   const processName = asOptionalString(root.processName, "processName");
+  assertUsableId(processId, "processId");
 
   const lanes: LaneInput[] = [];
   const laneIds = new Set<string>();
@@ -259,6 +276,7 @@ export function parseDiagramInput(value: unknown): DiagramInput {
     if (laneIds.has(id)) {
       fail(`Duplicate lane id "${id}" at lanes[${index}].id.`);
     }
+    assertUsableId(id, `lanes[${index}].id`);
     laneIds.add(id);
     lanes.push({
       id,
@@ -278,6 +296,7 @@ export function parseDiagramInput(value: unknown): DiagramInput {
     if (nodeIds.has(id)) {
       fail(`Duplicate node id "${id}" at nodes[${index}].id.`);
     }
+    assertUsableId(id, `nodes[${index}].id`);
     nodeIds.add(id);
 
     const type = asRequiredString(node.type, `nodes[${index}].type`);
@@ -312,6 +331,7 @@ export function parseDiagramInput(value: unknown): DiagramInput {
     if (edgeIds.has(id)) {
       fail(`Duplicate edge id "${id}" at edges[${index}].id.`);
     }
+    assertUsableId(id, `edges[${index}].id`);
     edgeIds.add(id);
 
     const sourceId = asRequiredString(edge.sourceId, `edges[${index}].sourceId`);

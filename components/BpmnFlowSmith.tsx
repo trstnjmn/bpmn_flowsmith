@@ -881,6 +881,7 @@ export default function BpmnFlowSmith() {
 
   const handleReset = useCallback(() => {
     setJsonInput("");
+    setProcessDescription("");
     setStatus("idle");
     setError(null);
     setWarnings([]);

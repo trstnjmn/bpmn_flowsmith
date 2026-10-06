@@ -29,7 +29,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     >
       <body className="flex h-full flex-col overflow-hidden">
         {children}
-        <footer className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-zinc-200 px-6 py-3 text-xs text-zinc-500 lg:px-8 dark:border-zinc-800 dark:text-zinc-400">
+        <footer className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-base-200 px-6 py-3 text-xs text-base-content/60 lg:px-8">
           <p>
             BPMN FlowSmith — built with bpmn-js, bpmn-moddle &amp; bpmn-auto-layout
           </p>
@@ -37,7 +37,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
             href={GITHUB_URL}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 rounded-md px-2 py-1 font-medium text-zinc-700 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800 dark:hover:text-white"
+            className="inline-flex items-center gap-2 rounded-md px-2 py-1 font-medium text-base-content/70 transition-colors hover:bg-base-200 hover:text-base-content"
           >
             <svg
               viewBox="0 0 24 24"

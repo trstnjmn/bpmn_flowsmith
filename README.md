@@ -40,13 +40,17 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
-| Script            | Description                              |
-| ----------------- | ---------------------------------------- |
-| `npm run dev`     | Start the dev server (Turbopack)          |
-| `npm run build`   | Production build                         |
-| `npm run start`   | Serve the production build               |
-| `npm run lint`    | ESLint                                   |
-| `npx tsc --noEmit`| Type check                               |
+| Script              | Description                                 |
+| ------------------- | ------------------------------------------- |
+| `npm run dev`       | Start the dev server (Turbopack)            |
+| `npm run build`     | Production build                            |
+| `npm run start`     | Serve the production build                  |
+| `npm run lint`      | ESLint                                      |
+| `npm run typecheck` | TypeScript, `tsc --noEmit`                  |
+| `npm test`          | `node --test`: layout, routing, prompt, store |
+
+CI (`.github/workflows/ci.yml`) runs typecheck, lint, test and build on every push and pull request.
+The tests transpile the TypeScript sources on the fly, so they need no build step and no extra dependency.
 
 ## Workflow
 
@@ -55,9 +59,8 @@ Open [http://localhost:3000](http://localhost:3000).
 3. Paste the returned JSON into the **Process definition (JSON)** editor.
 4. Click **Generate & Edit Diagram** (or press `Ctrl`/`⌘` + `Enter`).
 5. Refine the result on the canvas, optionally in fullscreen.
-6. Click **Export .bpmn**, **Export .xml**, **Export PNG**, **Export SVG** or **Export Mermaid** to
-   download the current state of the canvas. **Copy Markdown** copies the Mermaid code in a fenced block
-   for GitHub or GitLab.
+6. Click **Export .bpmn**, **Export .xml** or **Export PNG** to download the current state of the
+   canvas.
 
 ## Input schema
 
@@ -162,8 +165,7 @@ the association is a child of `bpmn:Activity` in BPMN.
 `bpmn-auto-layout` emits no DI for data associations, so `applyDataAssociationLayout()` routes them itself:
 orthogonal, around every other shape, and clear of every line already on the plane. Several associations
 on the same shape dock at spread-out points instead of all on the edge centre, so they do not run on top
-of the sequence flows. In the Mermaid export a data association becomes a dotted link, pointed the way the
-data moves (store → task when reading, task → store when writing).
+of the sequence flows.
 
 ### Supported node types
 
@@ -189,51 +191,7 @@ of the initial page load. All exports use the live canvas and therefore reflect 
 | --- | --- | --- |
 | `.bpmn` | `saveXML({ format: true })` | canonical, re-importable |
 | `.xml` | `saveXML({ format: true })` | identical content as `.xml` for generic XML tooling |
-| `.svg` | `saveSVG()` | vector, keeps the bpmn-js styling |
 | `.png` | `saveSVG()` → `<canvas>` | rasterised at 2×, white background |
-| `.mmd` | XML → Mermaid `flowchart` | plain text, for GitHub/GitLab Markdown |
-
-### Mermaid export
-
-`lib/bpmn-mermaid.ts` converts the current canvas into a Mermaid `flowchart LR`. Lanes become `subgraph`
-blocks, so the swimlane structure survives. **Copy Markdown** puts the whole thing on the clipboard
-already wrapped in a ` ```mermaid ` fence, ready to paste into a GitHub or GitLab Markdown file.
-
-```mermaid
-%% Antragsprüfung
-
-flowchart LR
-  subgraph s_l1["Sachbearbeiter"]
-    n_s1(["Antrag eingegangen"])
-    n_t1["Antrag prüfen"]
-    n_g1{{"Antrag gültig?"}}
-  end
-  subgraph s_l2["Fachbereichsleitung"]
-    n_t2["Freigabe erteilen"]
-  end
-
-  n_s1 --> n_t1
-  n_t1 --> n_g1
-  n_g1 -->|"Ja"| n_t2
-```
-
-Shape mapping. Mermaid offers fewer shapes than BPMN, so several element types share a rendering:
-
-| BPMN | Mermaid shape |
-| --- | --- |
-| `startEvent` | `([…])` stadium |
-| `endEvent` | `((…))` circle |
-| `intermediateThrowEvent`, `intermediateCatchEvent` | `(…)` rounded |
-| `exclusiveGateway`, `inclusiveGateway`, `parallelGateway`, `complexGateway`, `eventBasedGateway` | `{…}` / `{{…}}` |
-| `task`, `userTask`, `manualTask` | `[…]` rectangle |
-| `serviceTask`, `sendTask`, `receiveTask`, `subProcess`, `callActivity` | `[[…]]` subroutine |
-| `scriptTask`, `businessRuleTask` | `[/…/]` parallelogram |
-| `dataObjectReference`, `dataStoreReference` | `[(…)]` cylinder |
-
-Gateway markers (the `+` of a parallel split, the `×` of an exclusive split) have no Mermaid equivalent,
-so gateways differ only in shape. A sequence flow `condition` becomes an edge label. Labels are quoted and
-HTML-escaped, so quotes, `<`, `>` and entity-like `#hash;` sequences are safe. A data association becomes a
-dotted link (`-.->`), pointed the way the data moves: store → task when reading, task → store when writing.
 
 ## Project structure
 
@@ -244,9 +202,14 @@ app/
   globals.css                   Tailwind entry + color tokens
 components/
   BpmnFlowSmith.tsx             client component: editor, modeler, fullscreen, import/export
+  theme.ts                      shared Tailwind button classes (primary, secondary, ghost, warning)
 lib/
   bpmn-diagram.ts               JSON validation, BPMN generation, auto-layout + lane-aware layout
-  bpmn-mermaid.ts               BPMN XML → Mermaid flowchart (GitHub/GitLab embed)
+tests/
+  layout.test.cjs               lanes, routing, round trip, data associations
+  prompt-language.test.cjs      English/German prompt, schema example, section 3d
+  prompt-store.test.cjs         output-language store: default, round trip, cross-tab, blocked storage
+  helpers/loader.js             transpiles lib/*.ts on the fly for `node --test`
 types/
   bpmn-moddle.d.ts              ambient types for bpmn-moddle
   bpmn-auto-layout.d.ts         ambient types for bpmn-auto-layout
@@ -270,9 +233,9 @@ public/
   eight flows leaving one gateway can still end up with short overlapping segments near the shared node.
 - **`condition` is a label.** It is exported as the sequence flow's `name`, not as a formal
   `bpmn:conditionExpression`.
-- **PNG and SVG export run in the browser.** Both are produced from `saveSVG()` and reflect manual canvas
-  edits. SVG is the lossless option; PNG is rasterised at 2× on a white background, and the export needs
-  JavaScript, so it only works after the modeler has loaded.
+- **PNG export runs in the browser.** The image is built from `saveSVG()` and therefore reflects manual
+  canvas edits; it is rasterised at 2× on a white background. The export needs JavaScript, so it only works
+  after the modeler has loaded.
 - **The XML preview is a snapshot.** It shows the last generated or imported XML. After canvas edits an
   `edited` badge appears; use **Export .bpmn** to get the current state.
 - **Data elements sit outside the lanes.** That is forced by BPMN: a lane may only contain flow nodes, and a

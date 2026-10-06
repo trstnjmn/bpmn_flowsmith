@@ -4,18 +4,17 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 import type { ChangeEvent, KeyboardEvent } from "react";
 import type Canvas from "diagram-js/lib/core/Canvas";
 import {
-  SUPPORTED_NODE_TYPES,
   DiagramInputError,
   buildBpmnXml,
   extractJsonPayload,
   layoutBpmnXml,
   parseDiagramInput,
 } from "@/lib/bpmn-diagram";
-import { bpmnXmlToMermaid, toMermaidMarkdown } from "@/lib/bpmn-mermaid";
+import { lintDiagramInput } from "@/lib/bpmn-lint";
+import type { LintIssue } from "@/lib/bpmn-lint";
 import "bpmn-js/dist/assets/diagram-js.css";
 import "bpmn-js/dist/assets/bpmn-js.css";
 import "bpmn-js/dist/assets/bpmn-font/css/bpmn.css";
-import { btnGhost, btnPrimary, btnSecondary } from "./theme";
 
 type BpmnModelerInstance = InstanceType<
   (typeof import("bpmn-js/lib/Modeler"))["default"]
@@ -23,7 +22,6 @@ type BpmnModelerInstance = InstanceType<
 
 type ResettableModeler = BpmnModelerInstance & { clear(): void };
 
-type ImageFormat = "png" | "svg";
 type DiagramFormat = "bpmn" | "xml";
 
 const IMAGE_SCALE = 2;
@@ -511,9 +509,7 @@ export default function BpmnFlowSmith() {
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
-  const [xml, setXml] = useState<string | null>(null);
-  const [mermaid, setMermaid] = useState<string | null>(null);
-  const [mermaidCopied, setMermaidCopied] = useState(false);
+  const [lintIssues, setLintIssues] = useState<LintIssue[]>([]);
   const [summary, setSummary] = useState<RenderSummary | null>(null);
   const [modelerReady, setModelerReady] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
@@ -615,6 +611,7 @@ export default function BpmnFlowSmith() {
   const handleGenerate = useCallback(async () => {
     setStatus("busy");
     setError(null);
+    setLintIssues([]);
 
     try {
       if (!jsonInput.trim()) {
@@ -624,6 +621,7 @@ export default function BpmnFlowSmith() {
       }
 
       const input = parseDiagramInput(JSON.parse(extractJsonPayload(jsonInput)) as unknown);
+      setLintIssues(lintDiagramInput(input));
       const rawXml = await buildBpmnXml(input);
       const laidOutXml = await layoutBpmnXml(rawXml);
 
@@ -639,8 +637,6 @@ export default function BpmnFlowSmith() {
       const { warnings: importWarnings } = await modeler.importXML(laidOutXml);
       modeler.get<Canvas>("canvas", true).zoom("fit-viewport");
 
-      setXml(laidOutXml);
-      setMermaid(null);
       setCanvasEdited(false);
       setWarnings(importWarnings.map((warning) => String(warning)));
       setSummary({
@@ -686,6 +682,7 @@ export default function BpmnFlowSmith() {
 
       setStatus("busy");
       setError(null);
+      setLintIssues([]);
 
       try {
         const rawXml = await file.text();
@@ -715,8 +712,6 @@ export default function BpmnFlowSmith() {
         );
         modeler.get<Canvas>("canvas", true).zoom("fit-viewport");
 
-        setXml(importableXml);
-        setMermaid(null);
         setCanvasEdited(false);
         setWarnings(importWarnings.map((warning) => String(warning)));
         setSummary({
@@ -756,7 +751,6 @@ export default function BpmnFlowSmith() {
           throw new Error("There is no diagram to export yet.");
         }
 
-        setXml(savedXml);
         downloadBpmn(savedXml, summary?.fileName ?? "process.bpmn", format);
       } catch (thrown) {
         setError(describeError(thrown));
@@ -767,8 +761,7 @@ export default function BpmnFlowSmith() {
     [summary],
   );
 
-  const handleExportImage = useCallback(
-    async (format: ImageFormat) => {
+  const handleExportImage = useCallback(async () => {
       const pendingModeler = modelerPromiseRef.current;
       const modeler = pendingModeler ? await pendingModeler : null;
 
@@ -788,17 +781,7 @@ export default function BpmnFlowSmith() {
 
         const base = (summary?.fileName ?? "process").replace(/\.bpmn$/i, "");
 
-        if (format === "svg") {
-          downloadBlob(
-            new Blob([svg], { type: "image/svg+xml;charset=utf-8" }),
-            `${base}.svg`,
-          );
-        } else {
-          downloadBlob(
-            await svgToPngBlob(svg, IMAGE_SCALE),
-            `${base}.png`,
-          );
-        }
+        downloadBlob(await svgToPngBlob(svg, IMAGE_SCALE), `${base}.png`);
       } catch (thrown) {
         setError(describeError(thrown));
       } finally {
@@ -807,57 +790,6 @@ export default function BpmnFlowSmith() {
     },
     [summary],
   );
-
-  const handleExportMermaid = useCallback(async () => {
-    const pendingModeler = modelerPromiseRef.current;
-    const modeler = pendingModeler ? await pendingModeler : null;
-
-    if (!modeler) {
-      return;
-    }
-
-    setIsExporting(true);
-    setError(null);
-
-    try {
-      const { xml: savedXml } = await modeler.saveXML({ format: true });
-
-      if (!savedXml) {
-        throw new Error("There is no diagram to export yet.");
-      }
-
-      const mermaid = await bpmnXmlToMermaid(savedXml);
-
-      setMermaid(mermaid);
-      downloadBlob(
-        new Blob([mermaid], { type: "text/plain;charset=utf-8" }),
-        `${(summary?.fileName ?? "process").replace(/\.bpmn$/i, "")}.mmd`,
-      );
-    } catch (thrown) {
-      setError(describeError(thrown));
-    } finally {
-      setIsExporting(false);
-    }
-  }, [summary]);
-
-  const handleCopyMermaid = useCallback(async () => {
-    const code = mermaid ?? "";
-
-    if (code.trim().length === 0) {
-      setError("Export Mermaid first so there is code to copy.");
-      return;
-    }
-
-    try {
-      await navigator.clipboard.writeText(toMermaidMarkdown(code));
-      setMermaidCopied(true);
-      window.setTimeout(() => setMermaidCopied(false), 2000);
-    } catch {
-      setError(
-        "The clipboard is not available here. Use Export Mermaid to download the code instead.",
-      );
-    }
-  }, [mermaid]);
 
   const handleLoadSample = useCallback(() => {
     setJsonInput(DEFAULT_JSON);
@@ -869,9 +801,7 @@ export default function BpmnFlowSmith() {
     setStatus("idle");
     setError(null);
     setWarnings([]);
-    setXml(null);
-    setMermaid(null);
-    setMermaidCopied(false);
+    setLintIssues([]);
     setSummary(null);
     setCanvasEdited(false);
     (modelerRef.current as ResettableModeler | null)?.clear();
@@ -888,25 +818,29 @@ export default function BpmnFlowSmith() {
   );
 
   const isBusy = status === "busy";
+  const lintErrorCount = lintIssues.filter(
+    (issue) => issue.severity === "error",
+  ).length;
+  const lintHintCount = lintIssues.length - lintErrorCount;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 p-4 lg:gap-4 lg:p-6">
       <header className="flex shrink-0 items-center justify-between gap-4">
         <div className="flex min-w-0 items-center gap-3">
-          <h1 className="text-xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+          <h1 className="text-xl font-semibold tracking-tight">
             BPMN FlowSmith
           </h1>
         </div>
       </header>
 
-      <section className="shrink-0 rounded-xl border border-zinc-300 bg-white dark:border-zinc-800 dark:bg-zinc-950">
+      <section className="shrink-0 rounded-lg border border-base-300 bg-base-100">
         <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2">
           <button
             type="button"
             onClick={() => setGuideOpen((open) => !open)}
             aria-expanded={guideOpen}
             aria-controls="flowsmith-guide"
-            className="flex items-center gap-2 text-sm font-semibold text-zinc-900 dark:text-zinc-100"
+            className="flex items-center gap-2 font-semibold"
           >
             <span
               aria-hidden="true"
@@ -917,52 +851,53 @@ export default function BpmnFlowSmith() {
             How to Use
           </button>
           <div className="flex items-center gap-2">
+
             <label
-              htmlFor="flowsmith-output-language"
-              className="whitespace-nowrap text-sm font-medium text-zinc-700 dark:text-zinc-300"
-            >
-              Output language
-            </label>
-            <select
-              id="flowsmith-output-language"
-              value={outputLanguage}
-              onChange={(event) =>
-                storeOutputLanguage(event.target.value as OutputLanguage)
-              }
-              className="rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-800 transition-colors hover:bg-zinc-100 focus:outline-none focus:ring-2 focus:ring-zinc-400 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
-            >
-              <option value="en">English</option>
-              <option value="de">Deutsch</option>
-            </select>
-            <button
-              type="button"
-              onClick={() => void handleCopyPrompt()}
-              className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
-                promptCopied
-                  ? "bg-emerald-600 text-white"
-                  : "border border-zinc-300 text-zinc-800 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
-              }`}
-            >
-              {promptCopied ? "Copied!" : "Copy Prompt"}
-            </button>
+                htmlFor="flowsmith-output-language"
+                className="whitespace-nowrap label"
+              >
+                Output language
+              </label>
+              <select
+                id="flowsmith-output-language"
+                value={outputLanguage}
+                onChange={(event) =>
+                  storeOutputLanguage(event.target.value as OutputLanguage)
+                }
+                className="select"
+              >
+                <option value="en">English</option>
+                <option value="de">Deutsch</option>
+              </select>
+              <button
+                type="button"
+                onClick={() => void handleCopyPrompt()}
+                className={`btn btn-outline ${
+                  promptCopied
+                    ? "btn-success"
+                    : ""
+                }`}
+              >
+                {promptCopied ? "Copied!" : "Copy Prompt"}
+              </button>
           </div>
         </div>
 
         {guideOpen ? (
           <ol
             id="flowsmith-guide"
-            className="grid max-h-40 gap-4 overflow-y-auto border-t border-zinc-200 px-4 py-3 text-sm sm:grid-cols-3 dark:border-zinc-800"
+            className="grid max-h-40 gap-4 overflow-y-auto border-t border-base-300 px-4 py-3 sm:grid-cols-3"
           >
             {buildGuideSteps(PROMPT_LANGUAGE_RULES[outputLanguage].placeholder).map((step, index) => (
               <li key={step.title} className="flex gap-3">
-                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-zinc-900 text-xs font-semibold text-white dark:bg-zinc-100 dark:text-zinc-900">
+                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-neutral text-xs font-semibold text-neutral-content">
                   {index + 1}
                 </span>
                 <span>
-                  <span className="block font-medium text-zinc-900 dark:text-zinc-100">
+                  <span className="block font-medium">
                     {step.title}
                   </span>
-                  <span className="mt-1 block text-zinc-600 dark:text-zinc-400">
+                  <span className="mt-1 block text-base-content/70">
                     {step.description}
                   </span>
                 </span>
@@ -976,7 +911,7 @@ export default function BpmnFlowSmith() {
         <section className="flex min-h-0 flex-col gap-3 overflow-y-auto">
           <div className="flex shrink-0 items-baseline justify-between gap-2">
             <label
-              className="text-sm font-medium text-zinc-800 dark:text-zinc-200"
+              className="label"
               htmlFor="flowsmith-json"
             >
               Process definition (JSON)
@@ -988,7 +923,7 @@ export default function BpmnFlowSmith() {
             value={jsonInput}
             onChange={(event) => setJsonInput(event.target.value)}
             onKeyDown={handleTextareaKeyDown}
-            className="min-h-32 w-full flex-1 resize-none overflow-auto rounded-lg border border-zinc-300 bg-white p-3 font-mono text-xs leading-relaxed text-zinc-800 outline-none focus:border-zinc-500 focus:ring-2 focus:ring-zinc-900/10 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+            className="textarea min-h-32 w-full flex-1 resize-none overflow-auto font-mono text-xs leading-relaxed"
           />
 
           <div className="flex shrink-0 flex-col gap-2">
@@ -996,7 +931,7 @@ export default function BpmnFlowSmith() {
               type="button"
               onClick={() => void handleGenerate()}
               disabled={isBusy || !modelerReady}
-              className={btnPrimary}
+              className="btn btn-primary"
             >
               {isBusy ? "Generating…" : "Generate & Edit Diagram"}
             </button>
@@ -1006,7 +941,7 @@ export default function BpmnFlowSmith() {
                 type="button"
                 onClick={() => void handleExport("bpmn")}
                 disabled={!summary || isBusy || isExporting}
-                className={btnSecondary}
+                className="btn btn-outline"
               >
                 {isExporting ? "Exporting…" : "Export .bpmn"}
               </button>
@@ -1015,17 +950,22 @@ export default function BpmnFlowSmith() {
                 type="button"
                 onClick={() => void handleExport("xml")}
                 disabled={!summary || isBusy || isExporting}
-                className={btnSecondary}
+                className="btn btn-outline"
               >
                 Export .xml
               </button>
-            </div>
 
-            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => void handleExportImage()}
+                disabled={!summary || isBusy || isExporting}
+                className="btn btn-outline"
+              >
+                Export PNG
+              </button>
+
               <label
-                className={`${btnSecondary} col-span-2 cursor-pointer focus-within:ring-2 focus-within:ring-zinc-900/30 dark:focus-within:ring-zinc-100/30 ${
-                  isBusy || !modelerReady ? "pointer-events-none opacity-50" : ""
-                }`}
+                className="btn btn-outline"
               >
                 Import .bpmn
                 <input
@@ -1036,72 +976,30 @@ export default function BpmnFlowSmith() {
                   className="sr-only"
                 />
               </label>
-            </div>
 
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => void handleExportMermaid()}
-                disabled={!summary || isBusy || isExporting}
-                className={btnSecondary}
-              >
-                Export Mermaid
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleCopyMermaid()}
-                disabled={!mermaid || isBusy}
-                className={btnGhost}
-              >
-                {mermaidCopied ? "Copied ✓" : "Copy Markdown"}
-              </button>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => void handleExportImage("png")}
-                disabled={!summary || isBusy || isExporting}
-                className={btnSecondary}
-              >
-                Export PNG
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleExportImage("svg")}
-                disabled={!summary || isBusy || isExporting}
-                className={btnSecondary}
-              >
-                Export SVG
-              </button>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2">
-              <button type="button" onClick={handleLoadSample} className={btnGhost}>
+              <button type="button" onClick={handleLoadSample} className="btn btn-outline">
                 Load sample
               </button>
+
               <button
                 type="button"
                 onClick={handleReset}
                 disabled={isBusy}
-                className={btnGhost}
+                className="btn btn-outline btn-error"
               >
                 Reset
               </button>
             </div>
-          </div>
+            </div>
 
           {error ? (
-            <div
-              role="alert"
-              className="rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200"
-            >
+            <div role="alert" className="alert alert-error">
               {error}
             </div>
           ) : null}
 
           {status === "ready" && summary ? (
-            <div className="rounded-lg border border-emerald-300 bg-emerald-50 p-3 text-sm text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-200">
+            <div className="alert alert-success">
               {summary.origin === "generated" ? (
                 <>
                   Rendered {summary.nodes} nodes, {summary.edges} flows
@@ -1120,7 +1018,7 @@ export default function BpmnFlowSmith() {
           ) : null}
 
           {warnings.length > 0 ? (
-            <details className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+            <details className="rounded-box border border-base-300 bg-base-200 p-3 text-sm">
               <summary className="cursor-pointer font-medium">
                 {warnings.length} import warning
                 {warnings.length === 1 ? "" : "s"}
@@ -1133,40 +1031,27 @@ export default function BpmnFlowSmith() {
             </details>
           ) : null}
 
-          <details className="rounded-lg border border-zinc-300 p-3 text-sm text-zinc-700 dark:border-zinc-700 dark:text-zinc-300">
-            <summary className="cursor-pointer font-medium">
-              Supported node types
-            </summary>
-            <p className="mt-2 font-mono text-xs leading-relaxed wrap-break-word">
-              {SUPPORTED_NODE_TYPES.join(", ")}
-            </p>
-          </details>
-
-          {mermaid ? (
-            <details className="rounded-lg border border-zinc-300 p-3 text-sm text-zinc-700 dark:border-zinc-700 dark:text-zinc-300">
+          {lintIssues.length > 0 ? (
+            <details className="rounded-box border border-base-300 bg-base-200 p-3 text-sm">
               <summary className="cursor-pointer font-medium">
-                Mermaid
-                {canvasEdited ? " (canvas edits are not shown here yet)" : ""}
+                Model check: {lintErrorCount} error
+                {lintErrorCount === 1 ? "" : "s"},{" "}
+                {lintHintCount} hint{lintHintCount === 1 ? "" : "s"}
               </summary>
-              <pre className="mt-2 max-h-64 overflow-auto rounded bg-zinc-100 p-2 font-mono text-xs whitespace-pre dark:bg-zinc-900">
-                {mermaid}
-              </pre>
-              <p className="mt-2 text-xs">
-                Paste this into a <code>```mermaid</code> fence in GitHub or
-                GitLab Markdown. Use Copy Markdown to grab the fenced block.
-              </p>
-            </details>
-          ) : null}
-
-          {xml ? (
-            <details className="rounded-lg border border-zinc-300 p-3 text-sm text-zinc-700 dark:border-zinc-700 dark:text-zinc-300">
-              <summary className="cursor-pointer font-medium">
-                BPMN 2.0 XML
-                {canvasEdited ? " (canvas edits are not shown here yet)" : ""}
-              </summary>
-              <pre className="mt-2 max-h-64 overflow-auto rounded bg-zinc-100 p-2 font-mono text-xs whitespace-pre dark:bg-zinc-900">
-                {xml}
-              </pre>
+              <ul className="mt-2 list-disc space-y-1 pl-5 text-xs">
+                {lintIssues.map((issue) => (
+                  <li
+                    key={`${issue.path}:${issue.message}`}
+                    className={
+                      issue.severity === "error"
+                        ? "font-medium text-error"
+                        : undefined
+                    }
+                  >
+                    <span className="font-mono">{issue.path}</span>: {issue.message}
+                  </li>
+                ))}
+              </ul>
             </details>
           ) : null}
         </section>
@@ -1174,15 +1059,15 @@ export default function BpmnFlowSmith() {
         <section
           className={
             isFullscreen
-              ? "fixed inset-0 z-50 flex flex-col bg-white dark:bg-zinc-950"
-              : "flex min-h-0 flex-col rounded-xl border border-zinc-300 bg-white dark:border-zinc-800 dark:bg-zinc-950"
+              ? "fixed inset-0 z-50 flex flex-col bg-base-100"
+              : "flex min-h-0 flex-col rounded-lg border border-base-300 bg-base-100"
           }
         >
-          <div className="flex shrink-0 items-center justify-between gap-3 border-b border-zinc-200 px-4 py-2 text-xs font-medium tracking-wide text-zinc-500 uppercase dark:border-zinc-800 dark:text-zinc-400">
+          <div className="flex shrink-0 items-center justify-between gap-3 border-b border-base-200 px-4 py-2 font-medium tracking-wide text-base-content/60 uppercase">
             <span className="flex items-center gap-2">
               <span>Diagram · editable</span>
               {canvasEdited ? (
-                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-800 normal-case dark:bg-amber-950/60 dark:text-amber-200">
+                <span className="badge badge-warning badge-sm normal-case">
                   edited
                 </span>
               ) : null}
@@ -1193,7 +1078,7 @@ export default function BpmnFlowSmith() {
                 type="button"
                 onClick={() => setIsFullscreen((active) => !active)}
                 aria-pressed={isFullscreen}
-                className="rounded-md border border-zinc-300 px-2 py-1 font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                className="btn btn-outline"
               >
                 {isFullscreen ? "Exit fullscreen (Esc)" : "Fullscreen"}
               </button>
@@ -1202,14 +1087,14 @@ export default function BpmnFlowSmith() {
           <div className="relative min-h-0 flex-1">
             <div ref={containerRef} className="h-full w-full" />
             {!summary ? (
-              <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-6 text-center text-sm text-zinc-400">
+              <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-6 text-center text-base-content/40">
                 Generate a diagram from JSON or import an existing .bpmn file
                 to start editing
               </div>
             ) : null}
           </div>
           {summary ? (
-            <p className="shrink-0 border-t border-zinc-200 px-4 py-2 text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+            <p className="shrink-0 border-t border-base-200 px-4 py-2 text-xs text-base-content/60">
               Drag elements, double-click to rename, or use the palette and
               context pad to extend the process.
             </p>

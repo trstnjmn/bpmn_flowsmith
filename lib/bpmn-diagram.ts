@@ -77,7 +77,7 @@ const NODE_TYPE_BY_KIND = {
 
 export type FlowNodeKind = keyof typeof NODE_TYPE_BY_KIND;
 
-export const SUPPORTED_NODE_TYPES: readonly string[] = Object.keys(
+const SUPPORTED_NODE_TYPES: readonly string[] = Object.keys(
   NODE_TYPE_BY_KIND,
 );
 
@@ -749,7 +749,7 @@ function planBand(memberBounds: Bounds[]): Band {
   return { slots, rowHeights };
 }
 
-export type AssociationLink = {
+type AssociationLink = {
   association: ModdleElement;
   nodeId: string;
   dataNodeId: string;
@@ -759,12 +759,39 @@ export type AssociationLink = {
 type Point = { x: number; y: number };
 
 /**
+ * Drops repeated consecutive waypoints. A route that stays on one coordinate - an
+ * association whose two anchors share a column - repeats its bend point, and a
+ * repeated point would serialise as a BPMN DI segment of length zero. Two points
+ * are kept at all times, because a `bpmndi:BPMNEdge` needs at least a start and
+ * an end.
+ */
+const dedupePoints = (points: Point[]): Point[] => {
+  const result: Point[] = [];
+
+  for (const entry of points) {
+    const previous = result[result.length - 1];
+
+    if (previous && previous.x === entry.x && previous.y === entry.y) {
+      continue;
+    }
+
+    result.push(entry);
+  }
+
+  if (result.length >= 2) {
+    return result;
+  }
+
+  return points.length >= 2 ? [points[0]!, points[points.length - 1]!] : points;
+};
+
+/**
  * Reads the data associations back out of the model. One end of an association is
  * the step, the other end is the `bpmn:DataInput` or `bpmn:DataOutput` inside the
  * step's `ioSpecification` — that one has no shape, so the drawn line joins the
  * step and the data element.
  */
-export function collectDataAssociationLinks(
+function collectDataAssociationLinks(
   definitions: ModdleElement,
 ): AssociationLink[] {
   const links: AssociationLink[] = [];
@@ -1051,8 +1078,9 @@ export async function applyDataAssociationLayout(xml: string): Promise<string> {
       ASSOCIATION_ANCHOR_OFFSET * (nodeOrdinal + 1),
       ASSOCIATION_ANCHOR_OFFSET * (dataOrdinal + 1),
     );
-    const route =
-      candidates.find((candidate) => isUsable(candidate, skipIds)) ?? candidates[0]!;
+    const route = dedupePoints(
+      candidates.find((candidate) => isUsable(candidate, skipIds)) ?? candidates[0]!,
+    );
 
     for (let index = 0; index + 1 < route.length; index++) {
       existingSegments.push([route[index]!, route[index + 1]!]);
@@ -1274,7 +1302,7 @@ export async function applyLaneLayout(xml: string): Promise<string> {
   const point = (x: number, y: number): ModdleElement =>
     moddle.create("dc:Point", { x, y });
   const waypointsOf = (points: Point[]): ModdleElement[] =>
-    points.map((entry) => point(entry.x, entry.y));
+    dedupePoints(points).map((entry) => point(entry.x, entry.y));
   const collinearOverlap = (
     from: Point,
     to: Point,

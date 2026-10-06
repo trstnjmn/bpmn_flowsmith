@@ -344,7 +344,7 @@ function buildGuideSteps(placeholder: string) {
   return [
     {
       title: "Copy the system prompt",
-      description: `The button below puts the strict BPMN JSON prompt on your clipboard — replace ${placeholder} with your process description. The "Output language" selector decides whether the LLM writes the labels in English or German.`,
+      description: `Type your process description into the field next to the button and the copied prompt contains it instead of ${placeholder}. The "Output language" selector decides whether the LLM writes the labels in English or German.`,
     },
     {
       title: "Paste it into your OpenCode LLM",
@@ -354,7 +354,7 @@ function buildGuideSteps(placeholder: string) {
     {
       title: "Paste the JSON and generate",
       description:
-        'Paste the JSON into the editor and click "Generate & Edit Diagram".',
+        'Paste the JSON into the editor — the "Paste" button takes it from the clipboard — and click "Generate & Edit Diagram".',
     },
     {
       title: "Search all processes (optional)",
@@ -551,6 +551,7 @@ export default function BpmnFlowSmith() {
   const [guideOpen, setGuideOpen] = useState(false);
   const [promptCopied, setPromptCopied] = useState(false);
   const [searchPromptCopied, setSearchPromptCopied] = useState(false);
+  const [processDescription, setProcessDescription] = useState("");
   const [isFullscreen, setIsFullscreen] = useState(false);
   // Read through an external store rather than in an effect: the page is
   // statically prerendered, so the server must keep seeing the default while
@@ -690,7 +691,16 @@ export default function BpmnFlowSmith() {
 
   const handleCopyPrompt = useCallback(async () => {
     try {
-      await copyToClipboard(buildSystemPrompt(outputLanguage));
+      const rules = PROMPT_LANGUAGE_RULES[outputLanguage];
+      const description = processDescription.trim();
+      const prompt = description
+        ? buildSystemPrompt(outputLanguage).replace(
+            rules.placeholder,
+            () => description,
+          )
+        : buildSystemPrompt(outputLanguage);
+
+      await copyToClipboard(prompt);
       setPromptCopied(true);
 
       if (copyTimerRef.current !== null) {
@@ -703,7 +713,7 @@ export default function BpmnFlowSmith() {
     } catch (thrown) {
       setError(describeError(thrown));
     }
-  }, [outputLanguage]);
+  }, [outputLanguage, processDescription]);
 
   const handleCopySearchPrompt = useCallback(async () => {
     try {
@@ -721,6 +731,27 @@ export default function BpmnFlowSmith() {
       setError(describeError(thrown));
     }
   }, [outputLanguage]);
+
+  const handlePasteJson = useCallback(async () => {
+    try {
+      if (typeof navigator === "undefined" || !navigator.clipboard?.readText) {
+        throw new Error(
+          "Reading from the clipboard is not available in this browser. Please paste into the editor with Ctrl+V.",
+        );
+      }
+
+      const text = await navigator.clipboard.readText();
+
+      if (!text.trim()) {
+        throw new Error("The clipboard does not contain any text.");
+      }
+
+      setJsonInput(text);
+      setError(null);
+    } catch (thrown) {
+      setError(describeError(thrown));
+    }
+  }, []);
 
   const handleImportFile = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
@@ -886,37 +917,46 @@ export default function BpmnFlowSmith() {
       </header>
 
       <section className="shrink-0 rounded-lg border border-base-300 bg-base-100">
-        <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2">
-          <button
-            type="button"
-            onClick={() => setGuideOpen((open) => !open)}
-            aria-expanded={guideOpen}
-            aria-controls="flowsmith-guide"
-            className="flex items-center gap-2 font-semibold"
-          >
-            <span
-              aria-hidden="true"
-              className={`transition-transform ${guideOpen ? "rotate-90" : ""}`}
-            >
-              &#9656;
-            </span>
-            How to Use
-          </button>
-          <div className="flex items-center gap-2">
 
-            <label
-                htmlFor="flowsmith-output-language"
-                className="whitespace-nowrap label"
+        <div className="flex flex-row items-center justify-between gap-3 px-4 py-2">
+            <button
+              type="button"
+              onClick={() => setGuideOpen((open) => !open)}
+              aria-expanded={guideOpen}
+              aria-controls="flowsmith-guide"
+              className="flex items-center gap-2 font-semibold"
+            >
+              <span
+                aria-hidden="true"
+                className={`transition-transform ${guideOpen ? "rotate-90" : ""}`}
               >
-                Output language
-              </label>
+                &#9656;
+              </span>
+              How to Use
+            </button>
+          <div className="flex flex-row items-center gap-2">
+            <label
+              htmlFor="flowsmith-process-description"
+              className="whitespace-nowrap label"
+            >
+              Process description
+            </label>
+            <input
+              id="flowsmith-process-description"
+              type="text"
+              value={processDescription}
+              onChange={(event) => setProcessDescription(event.target.value)}
+              placeholder={PROMPT_LANGUAGE_RULES[outputLanguage].placeholder}
+              className="input min-w-90 max-w-full"
+            />
+
               <select
                 id="flowsmith-output-language"
                 value={outputLanguage}
                 onChange={(event) =>
                   storeOutputLanguage(event.target.value as OutputLanguage)
                 }
-                className="select"
+                className="select min-w-32"
               >
                 <option value="en">English</option>
                 <option value="de">Deutsch</option>
@@ -924,6 +964,7 @@ export default function BpmnFlowSmith() {
               <button
                 type="button"
                 onClick={() => void handleCopyPrompt()}
+                title={`Copies the prompt with the process description instead of ${PROMPT_LANGUAGE_RULES[outputLanguage].placeholder}`}
                 className={`btn btn-outline ${
                   promptCopied
                     ? "btn-success"
@@ -949,7 +990,7 @@ export default function BpmnFlowSmith() {
         {guideOpen ? (
           <ol
             id="flowsmith-guide"
-            className="grid max-h-40 gap-4 overflow-y-auto border-t border-base-300 px-4 py-3 sm:grid-cols-3"
+            className="grid gap-4 overflow-y-auto border-t border-base-300 px-4 py-3 sm:grid-cols-3"
           >
             {buildGuideSteps(PROMPT_LANGUAGE_RULES[outputLanguage].placeholder).map((step, index) => (
               <li key={step.title} className="flex gap-3">
@@ -972,13 +1013,20 @@ export default function BpmnFlowSmith() {
 
       <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(0,26rem)_minmax(0,1fr)]">
         <section className="flex min-h-0 flex-col gap-3 overflow-y-auto">
-          <div className="flex shrink-0 items-baseline justify-between gap-2">
+          <div className="flex shrink-0 items-center justify-between gap-2">
             <label
               className="label"
               htmlFor="flowsmith-json"
             >
               Process definition (JSON)
             </label>
+            <button
+              type="button"
+              onClick={() => void handlePasteJson()}
+              className="btn btn-outline btn-sm"
+            >
+              Paste
+            </button>
           </div>
           <textarea
             id="flowsmith-json"

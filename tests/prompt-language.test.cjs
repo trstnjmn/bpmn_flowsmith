@@ -11,14 +11,14 @@ const src = fs.readFileSync(path.join(project, "components/BpmnFlowSmith.tsx"), 
 const start = src.indexOf('type OutputLanguage = "en" | "de";');
 const end = src.indexOf("function downloadBpmn");
 if (start < 0 || end < 0) throw new Error("markers not found");
-const region = src.slice(start, end) + "\nexport const __test = { buildSystemPrompt, buildGuideSteps };\n";
+const region = src.slice(start, end) + "\nexport const __test = { buildSystemPrompt, buildSearchPrompt, buildGuideSteps };\n";
 
 const js = ts.transpileModule(region, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: "es2022" },
 }).outputText;
 const mod = { exports: {} };
 new Function("exports", "module", "require", js)(mod.exports, mod, require);
-const { buildSystemPrompt, buildGuideSteps } = mod.exports.__test;
+const { buildSystemPrompt, buildSearchPrompt, buildGuideSteps } = mod.exports.__test;
 
 const failures = [];
 function check(name, ok, info) {
@@ -106,7 +106,7 @@ check("de: placeholder appears exactly once", de.split("[[PROZESSBESCHREIBUNG]]"
 // The guide shown in the UI must name the placeholder that is actually in the prompt.
 const enSteps = buildGuideSteps("[[PROCESS DESCRIPTION]]");
 const deSteps = buildGuideSteps("[[PROZESSBESCHREIBUNG]]");
-check("guide still has three steps", enSteps.length === 3 && deSteps.length === 3);
+check("guide still has four steps", enSteps.length === 4 && deSteps.length === 4);
 check("en guide names the English token", enSteps[0].description.includes("[[PROCESS DESCRIPTION]]") && !enSteps[0].description.includes("PROZESSBESCHREIBUNG"));
 check("de guide names the German token", deSteps[0].description.includes("[[PROZESSBESCHREIBUNG]]") && !deSteps[0].description.includes("[[PROCESS DESCRIPTION]]"));
 check("guide step titles stay English", enSteps.every((s, i) => s.title === deSteps[i].title));
@@ -137,6 +137,43 @@ for (const [name, prompt] of [["en", en], ["de", de]]) {
 }
 check("en: granularity example is English", en.includes('one method "createOrder" that validates the input, reserves stock and triggers the payment becomes THREE nodes ("Validate input data", "Reserve stock", "Trigger payment")'));
 check("de: granularity example is German", de.includes('one method "Bestellung anlegen" that validates the input, reserves stock and triggers the payment becomes THREE nodes ("Eingangsdaten validieren", "Bestand reservieren", "Zahlung auslösen")'));
+
+  assert.equal(
+    failures.length,
+    0,
+    `failures: ${failures.length}\n` + failures.join("\n"),
+  );
+});
+
+test("search prompt scans all processes, output language (en/de)", () => {
+  const en = buildSearchPrompt("en");
+  const de = buildSearchPrompt("de");
+
+  const failures = [];
+  function check(name, ok, info) {
+    if (ok) return;
+    failures.push(info ? `${name} -> ${info}` : name);
+  }
+
+  check("en and de search prompts differ", en !== de);
+
+  for (const [name, prompt] of [["en", en], ["de", de]]) {
+    check(`${name}: asks to scan the whole application once`, prompt.includes("scan the whole application once"));
+    check(`${name}: asks for a numbered list`, prompt.includes("Reply with a numbered list, one entry per process"));
+    check(`${name}: describes three lines per entry`, prompt.includes("Line 1:") && prompt.includes("Line 2:") && prompt.includes("Line 3:"));
+    check(`${name}: forbids JSON output`, prompt.includes("No JSON, no code fences"));
+    check(`${name}: keeps the project-search evidence list`, prompt.includes("state machines and status enums") && prompt.includes("grep, glob, read"));
+    check(`${name}: asks not to guess`, prompt.includes("Do not guess from general knowledge"));
+    check(`${name}: handles the empty result case`, prompt.includes("If the project contains no process"));
+    check(`${name}: no unresolved template holes`, !prompt.includes("undefined") && !/\$\{/.test(prompt));
+  }
+
+  check("en: output written in ENGLISH", en.includes("written in ENGLISH"));
+  check("de: output written in GERMAN", de.includes("written in GERMAN"));
+  check("en: does not claim GERMAN output", !en.includes("written in GERMAN"));
+  check("de: does not claim ENGLISH output", !de.includes("written in ENGLISH"));
+  check("en: ends on the English output sentence", en.endsWith("Only the numbered list, in ENGLISH."));
+  check("de: ends on the German output sentence", de.endsWith("Only the numbered list, in GERMAN."));
 
   assert.equal(
     failures.length,

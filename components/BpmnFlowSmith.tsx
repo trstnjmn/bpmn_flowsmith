@@ -308,6 +308,35 @@ ${rules.placeholder}`;
 }
 
 /**
+ * A second prompt for the same LLM: instead of modelling one described process
+ * into JSON, it scans the whole application and lists every business process it
+ * finds as a simple overview. The instructions stay in English; only the
+ * overview itself is written in the selected output language.
+ */
+function buildSearchPrompt(language: OutputLanguage): string {
+  const outputLanguageName = language === "en" ? "ENGLISH" : "GERMAN";
+
+  return `You are a search expert for a software application.
+Your single task: scan the whole application once, find EVERY business process it implements, and return a simple overview. Your final message is that overview and nothing else.
+
+## 1. HOW TO SEARCH
+1. Do not guess from general knowledge. Use your file and search tools (grep, glob, read) and explore the entire project before you write anything.
+2. Look in the usual homes of process logic: state machines and status enums, workflow and orchestration code, API routes, controllers and handlers, services, scheduled jobs and queue consumers, domain entities and database tables, role and permission definitions, notification or mail sending, existing BPMN/DMN files, and documentation.
+3. A process is a sequence of steps that crosses one or more roles or systems and ends in a concrete result. Group the evidence into distinct processes: do not split one process into several entries, and do not merge different processes into one.
+4. Include every process you find, however small. When the same flow shows up twice (for example a manual and an automated path) with identical steps, list it once.
+
+## 2. OUTPUT
+5. Reply with a numbered list, one entry per process, written in ${outputLanguageName}.
+6. Each entry has exactly three lines:
+   Line 1: the name of the process.
+   Line 2: one or two sentences describing what it does.
+   Line 3: its key steps, separated by " -> ".
+7. No JSON, no code fences, no headings, and no text outside the list.
+8. If the project contains no process, reply with a single sentence stating that.
+9. Do not model anything in BPMN and do not quote code. Only the numbered list, in ${outputLanguageName}.`;
+}
+
+/**
  * The guide names the same placeholder the prompt uses, so switching the
  * language never leaves the instructions pointing at a token that is not there.
  */
@@ -326,6 +355,11 @@ function buildGuideSteps(placeholder: string) {
       title: "Paste the JSON and generate",
       description:
         'Paste the JSON into the editor and click "Generate & Edit Diagram".',
+    },
+    {
+      title: "Search all processes (optional)",
+      description:
+        '"Copy search prompt" puts a prompt on the clipboard that scans the whole application and lists every business process as a simple overview — again in the selected "Output language".',
     },
   ] as const;
 }
@@ -516,6 +550,7 @@ export default function BpmnFlowSmith() {
   const [canvasEdited, setCanvasEdited] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
   const [promptCopied, setPromptCopied] = useState(false);
+  const [searchPromptCopied, setSearchPromptCopied] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   // Read through an external store rather than in an effect: the page is
   // statically prerendered, so the server must keep seeing the default while
@@ -663,6 +698,23 @@ export default function BpmnFlowSmith() {
       }
       copyTimerRef.current = window.setTimeout(() => {
         setPromptCopied(false);
+        copyTimerRef.current = null;
+      }, 2000);
+    } catch (thrown) {
+      setError(describeError(thrown));
+    }
+  }, [outputLanguage]);
+
+  const handleCopySearchPrompt = useCallback(async () => {
+    try {
+      await copyToClipboard(buildSearchPrompt(outputLanguage));
+      setSearchPromptCopied(true);
+
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+      copyTimerRef.current = window.setTimeout(() => {
+        setSearchPromptCopied(false);
         copyTimerRef.current = null;
       }, 2000);
     } catch (thrown) {
@@ -879,6 +931,17 @@ export default function BpmnFlowSmith() {
                 }`}
               >
                 {promptCopied ? "Copied!" : "Copy Prompt"}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleCopySearchPrompt()}
+                className={`btn btn-outline ${
+                  searchPromptCopied
+                    ? "btn-success"
+                    : ""
+                }`}
+              >
+                {searchPromptCopied ? "Copied!" : "Copy search prompt"}
               </button>
           </div>
         </div>

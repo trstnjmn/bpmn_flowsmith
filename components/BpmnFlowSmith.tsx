@@ -418,7 +418,7 @@ function buildGuideSteps(placeholder: string) {
     {
       title: "Search all processes (optional)",
       description:
-        'The "Prompts" tab also holds a search prompt that scans the whole application and lists every business process as a simple overview — again in the selected "Output language".',
+        '"Copy search all processes prompt" puts a prompt on the clipboard that scans the whole application and lists every business process as a simple overview — again in the selected "Output language".',
     },
   ] as const;
 }
@@ -1026,7 +1026,7 @@ export default function BpmnFlowSmith() {
                 onClick={() => setActiveTab("prompts")}
                 className={`tab ${activeTab === "prompts" ? "tab-active" : ""}`}
               >
-                Prompts
+                {searchPromptCopied ? "Copied!" : "Copy search all processes prompt"}
               </button>
             </div>
           </div>

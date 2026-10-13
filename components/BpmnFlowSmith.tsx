@@ -148,7 +148,7 @@ const PROMPT_LANGUAGE_RULES: Record<OutputLanguage, PromptLanguageRules> = {
   en: {
     placeholder: "[[PROCESS DESCRIPTION]]",
     labelRule:
-      "11. Every human-readable string (processName, lane names, node labels, edge conditions) MUST be written in ENGLISH. Only those strings use English — this instruction and your reasoning stay in English.",
+      "11. Every human-readable string (processName, lane names, node labels, edge conditions) MUST be written in ENGLISH. Only those strings use English — this instruction and your reasoning stay in English. When the project already ships translations (i18n or locale files, message catalogs, translation keys such as de.json, locales/*, messages.*, gettext), reuse the project's own English terms for those labels instead of inventing new wording.",
     conditionRule:
       '19. An "exclusiveGateway" has at least two outgoing edges. EACH of them MUST carry a "condition" in English (for example "Yes", "No", "Valid", "Amount over 1,000 EUR"), and the conditions must be mutually exclusive and together cover every case.',
     labelStyleRule:
@@ -164,7 +164,7 @@ const PROMPT_LANGUAGE_RULES: Record<OutputLanguage, PromptLanguageRules> = {
   de: {
     placeholder: "[[PROZESSBESCHREIBUNG]]",
     labelRule:
-      "11. Every human-readable string (processName, lane names, node labels, edge conditions) MUST be written in GERMAN. Only those strings use German — this instruction and your reasoning stay in English.",
+      "11. Every human-readable string (processName, lane names, node labels, edge conditions) MUST be written in GERMAN. Only those strings use German — this instruction and your reasoning stay in English. When the project already ships translations (i18n or locale files, message catalogs, translation keys such as de.json, locales/*, messages.*, gettext), reuse the project's own German terms for those labels instead of inventing new wording.",
     conditionRule:
       '19. An "exclusiveGateway" has at least two outgoing edges. EACH of them MUST carry a "condition" in German (for example "Ja", "Nein", "Gültig", "Betrag über 1.000 Euro"), and the conditions must be mutually exclusive and together cover every case.',
     labelStyleRule:
@@ -254,7 +254,7 @@ ${rules.labelRule}
 ## 3b. ROLES AND LANES
 - Lanes are rendered as real BPMN swimlanes. The "lanes" array therefore describes who acts, not just a grouping.
 - At least one lane MUST be a concrete human role taken from the project (for example ${rules.roleExamples}). A process with human work steps always has at least one human role lane.
-- Name human lanes after the actual role found in the code — role enums, permission checks, authorisation decorators, admin flags, or controller guards. Derive the name from that evidence, not from the request wording alone.
+- Name human lanes after the actual role found in the code — role enums, permission checks, authorisation decorators, admin flags, or controller guards. Derive the name from that evidence, not from the request wording alone. When the project ships translations, take the term from the project's own translation catalog.
 - Name system lanes after the concrete actor: the service, job, queue, or integration that performs the work (for example ${rules.systemExamples}). Never merge different systems into one "System" lane.
 - FORBIDDEN lane names: "Benutzer", "User", "Kunde", "Actor", "Participants", "Various", "Other", "Sonstige", "Unbekannt". Generic placeholders destroy the value of the swimlanes.
 - Two lanes are only justified when the actors really differ. Do not invent an extra role to fill a gap, and do not split one role into several lanes.
@@ -303,7 +303,7 @@ ${buildJsonExample(rules.example)}
 This example illustrates the structure only. Copy NONE of its content, ids, labels, or conditions. Model the process from the project evidence and the description at the end of this instruction.
 
 ## 6. PROCESS DESCRIPTION
-Replace the placeholder line below with the business process to model, then output only the JSON:
+Replace the placeholder line below with the business process to model — when it names several processes, combine them into ONE process definition with shared lanes and a single start event — then output only the JSON:
 ${rules.placeholder}`;
 }
 
@@ -337,6 +337,63 @@ Your single task: scan the whole application once, find EVERY business process i
 }
 
 /**
+ * Variant of the system prompt for the "Whole application" switch: instead of a
+ * single described process, the LLM scans the entire project and combines every
+ * business process it finds into one process definition. The instructions stay
+ * in English; only the labels follow the selected output language.
+ */
+function buildWholeApplicationPrompt(language: OutputLanguage): string {
+  const marker = "## 6. PROCESS DESCRIPTION";
+  const base = buildSystemPrompt(language);
+  const head = base.slice(0, base.indexOf(marker));
+
+  return `${head}${marker}
+Ignore the placeholder. Following section 1, scan the entire project, find EVERY business process it implements, and combine them into ONE single process definition: shared lanes, exactly one "startEvent", at least one "endEvent", and one coherent flow. Then output only the JSON — no placeholder, no prose.`;
+}
+
+/**
+ * Fills the placeholder line of the system prompt with the description typed in
+ * the UI. An empty description leaves the placeholder untouched, so the prompt
+ * still asks the LLM for a described process.
+ */
+function applyProcessDescription(
+  prompt: string,
+  language: OutputLanguage,
+  description: string,
+): string {
+  const trimmed = description.trim();
+
+  if (!trimmed) {
+    return prompt;
+  }
+
+  return prompt.replace(
+    PROMPT_LANGUAGE_RULES[language].placeholder,
+    () => trimmed,
+  );
+}
+
+/**
+ * Single entry point used by the "Copy Prompt" button: either the whole-app
+ * variant or the normal prompt with the typed description filled in.
+ */
+function buildPromptForCopy(
+  language: OutputLanguage,
+  description: string,
+  wholeApplication: boolean,
+): string {
+  if (wholeApplication) {
+    return buildWholeApplicationPrompt(language);
+  }
+
+  return applyProcessDescription(
+    buildSystemPrompt(language),
+    language,
+    description,
+  );
+}
+
+/**
  * The guide names the same placeholder the prompt uses, so switching the
  * language never leaves the instructions pointing at a token that is not there.
  */
@@ -344,7 +401,7 @@ function buildGuideSteps(placeholder: string) {
   return [
     {
       title: "Copy the system prompt",
-      description: `Type your process description into the field next to the button and the copied prompt contains it instead of ${placeholder}. The "Output language" selector decides whether the LLM writes the labels in English or German.`,
+      description: `Type your process description into the field next to the button and the copied prompt contains it instead of ${placeholder}. Tick "Whole application" to model every process of the app in one diagram instead. The "Output language" selector decides whether the LLM writes the labels in English or German.`,
     },
     {
       title: "Paste it into your OpenCode LLM",
@@ -552,6 +609,7 @@ export default function BpmnFlowSmith() {
   const [promptCopied, setPromptCopied] = useState(false);
   const [searchPromptCopied, setSearchPromptCopied] = useState(false);
   const [processDescription, setProcessDescription] = useState("");
+  const [coverWholeApplication, setCoverWholeApplication] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   // Read through an external store rather than in an effect: the page is
   // statically prerendered, so the server must keep seeing the default while
@@ -691,14 +749,11 @@ export default function BpmnFlowSmith() {
 
   const handleCopyPrompt = useCallback(async () => {
     try {
-      const rules = PROMPT_LANGUAGE_RULES[outputLanguage];
-      const description = processDescription.trim();
-      const prompt = description
-        ? buildSystemPrompt(outputLanguage).replace(
-            rules.placeholder,
-            () => description,
-          )
-        : buildSystemPrompt(outputLanguage);
+      const prompt = buildPromptForCopy(
+        outputLanguage,
+        processDescription,
+        coverWholeApplication,
+      );
 
       await copyToClipboard(prompt);
       setPromptCopied(true);
@@ -713,7 +768,7 @@ export default function BpmnFlowSmith() {
     } catch (thrown) {
       setError(describeError(thrown));
     }
-  }, [outputLanguage, processDescription]);
+  }, [outputLanguage, processDescription, coverWholeApplication]);
 
   const handleCopySearchPrompt = useCallback(async () => {
     try {
@@ -882,6 +937,7 @@ export default function BpmnFlowSmith() {
   const handleReset = useCallback(() => {
     setJsonInput("");
     setProcessDescription("");
+    setCoverWholeApplication(false);
     setStatus("idle");
     setError(null);
     setWarnings([]);
@@ -935,22 +991,36 @@ export default function BpmnFlowSmith() {
               </span>
               How to Use
             </button>
-          <div className="flex flex-row items-center gap-2">
-            <label
-              htmlFor="flowsmith-process-description"
-              className="whitespace-nowrap label"
-            >
-              Process description
+          <div className="flex flex-row items-center gap-4">
+            <label className="flex cursor-pointer items-center gap-2 whitespace-nowrap label">
+              <input
+                type="checkbox"
+                checked={coverWholeApplication}
+                onChange={(event) =>
+                  setCoverWholeApplication(event.target.checked)
+                }
+                className="checkbox checkbox-sm"
+              />
+              Whole application
             </label>
-            <input
-              id="flowsmith-process-description"
-              type="text"
-              value={processDescription}
-              onChange={(event) => setProcessDescription(event.target.value)}
-              placeholder={PROMPT_LANGUAGE_RULES[outputLanguage].placeholder}
-              className="input min-w-90 max-w-full"
-            />
+            {!coverWholeApplication && (
+              <>
 
+                <input
+                  id="flowsmith-process-description"
+                  type="text"
+                  value={processDescription}
+                  onChange={(event) => setProcessDescription(event.target.value)}
+                  placeholder={
+                    coverWholeApplication
+                      ? "Whole application"
+                      : PROMPT_LANGUAGE_RULES[outputLanguage].placeholder
+                  }
+                  disabled={coverWholeApplication}
+                  className="input min-w-90 max-w-full"
+                />
+              </>
+            )}
               <select
                 id="flowsmith-output-language"
                 value={outputLanguage}
@@ -965,7 +1035,11 @@ export default function BpmnFlowSmith() {
               <button
                 type="button"
                 onClick={() => void handleCopyPrompt()}
-                title={`Copies the prompt with the process description instead of ${PROMPT_LANGUAGE_RULES[outputLanguage].placeholder}`}
+                title={
+                  coverWholeApplication
+                    ? "Copies the prompt that models every process of the whole application"
+                    : `Copies the prompt with the process description instead of ${PROMPT_LANGUAGE_RULES[outputLanguage].placeholder}`
+                }
                 className={`btn btn-outline ${
                   promptCopied
                     ? "btn-success"

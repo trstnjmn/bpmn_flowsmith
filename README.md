@@ -24,9 +24,14 @@ element can still be moved, renamed, extended or deleted before you export.
 - **Auto-layout on import** — files without layout information (`BPMNDiagram` DI) are laid out first.
 - **No page scrolling** — the app is bound to the viewport height; only the editor and side panel scroll.
 - **Strict output prompt** — one click copies the system prompt for LLMs that emit the JSON schema.
+- **Process description field** — text typed into the field next to **Copy Prompt** replaces the prompt's
+  placeholder, so the LLM models that process. Naming several processes combines them into one diagram.
+- **Whole application switch** — the **Whole application** checkbox drops the placeholder and asks the LLM
+  to scan the entire project and merge every process it finds into a single diagram.
 - **English or German labels** — the **Output language** selector decides which language the prompt asks the
   LLM to write labels, lane names, and edge conditions in. The choice is stored in `localStorage` and applies
-  to the next copy, the rule wording, and the example JSON.
+  to the next copy, the rule wording, and the example JSON. When the analysed project ships translations
+  (i18n/locale files), the prompt tells the LLM to reuse the project's own terms.
 - **Dark mode** — follows `prefers-color-scheme`.
 
 ## Getting started
@@ -55,7 +60,8 @@ The tests transpile the TypeScript sources on the fly, so they need no build ste
 ## Workflow
 
 1. Pick the **Output language** next to the button (English by default, remembered in `localStorage`).
-2. Click **Copy Prompt** and paste it into your LLM together with a process description.
+2. Type the process into the **Process description** field — or tick **Whole application** to let the LLM
+   model every process of the project. Click **Copy Prompt** and paste it into your LLM.
 3. Paste the returned JSON into the **Process definition (JSON)** editor.
 4. Click **Generate & Edit Diagram** (or press `Ctrl`/`⌘` + `Enter`).
 5. Refine the result on the canvas, optionally in fullscreen.

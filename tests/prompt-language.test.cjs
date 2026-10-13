@@ -240,6 +240,9 @@ test("search prompt scans all processes, output language (en/de)", () => {
     check(`${name}: describes three lines per entry`, prompt.includes("Line 1:") && prompt.includes("Line 2:") && prompt.includes("Line 3:"));
     check(`${name}: forbids JSON output`, prompt.includes("No JSON, no code fences"));
     check(`${name}: keeps the project-search evidence list`, prompt.includes("state machines and status enums") && prompt.includes("grep, glob, read"));
+    check(`${name}: demands an exhaustive search`, prompt.includes("Be exhaustive") && prompt.includes("Do not stop early"));
+    check(`${name}: enumerates by entry point`, prompt.includes("Enumerate by entry point") && prompt.includes("every API route and controller action"));
+    check(`${name}: verifies full coverage before answering`, prompt.includes("verify silently that every entry point"));
     check(`${name}: asks not to guess`, prompt.includes("Do not guess from general knowledge"));
     check(`${name}: handles the empty result case`, prompt.includes("If the project contains no process"));
     check(`${name}: no unresolved template holes`, !prompt.includes("undefined") && !/\$\{/.test(prompt));

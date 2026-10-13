@@ -323,19 +323,22 @@ Your single task: scan the whole application once, find EVERY business process i
 
 ## 1. HOW TO SEARCH
 1. Do not guess from general knowledge. Use your file and search tools (grep, glob, read) and explore the entire project before you write anything.
-2. Look in the usual homes of process logic: state machines and status enums, workflow and orchestration code, API routes, controllers and handlers, services, scheduled jobs and queue consumers, domain entities and database tables, role and permission definitions, notification or mail sending, existing BPMN/DMN files, and documentation.
-3. A process is a sequence of steps that crosses one or more roles or systems and ends in a concrete result. Group the evidence into distinct processes: do not split one process into several entries, and do not merge different processes into one.
-4. Include every process you find, however small. When the same flow shows up twice (for example a manual and an automated path) with identical steps, list it once.
+2. Search the usual homes of process logic: state machines and status enums, workflow and orchestration code, API routes, controllers and handlers, services, scheduled jobs and queue consumers, domain entities and database tables, role and permission definitions, notification or mail sending, existing BPMN/DMN files, and documentation.
+3. Be exhaustive. Enumerate by entry point and open the code behind every one of them: every API route and controller action, every user command and button handler, every scheduled job and timer, every queue consumer and event listener, every state machine and each of its transitions, every email, report, import and export. Expect the list to be long — a single controller or service often hides several processes.
+4. Do not stop early. Keep searching module by module, folder by folder, until every area has been looked at, and only then write the answer. Finding one process in a file is never a reason to skip the rest of it.
+5. A process is a sequence of steps that crosses one or more roles or systems and ends in a concrete result. Include every process you find, however small.
+6. List two flows separately whenever their trigger, role, or result differs, even if they share steps. Merge entries only when the trigger, the steps, and the result are literally identical. Never split one single flow into several entries, and never invent a process the code does not implement.
+7. Before you answer, verify silently that every entry point you found appears either as its own entry or as a clearly named step of one, and that no module, controller, job, or handler was left unexplored. Never print this verification.
 
 ## 2. OUTPUT
-5. Reply with a numbered list, one entry per process, written in ${outputLanguageName}.
-6. Each entry has exactly three lines:
+8. Reply with a numbered list, one entry per process, written in ${outputLanguageName}.
+9. Each entry has exactly three lines:
    Line 1: the name of the process.
    Line 2: one or two sentences describing what it does.
    Line 3: its key steps, separated by " -> ".
-7. No JSON, no code fences, no headings, and no text outside the list.
-8. If the project contains no process, reply with a single sentence stating that.
-9. Do not model anything in BPMN and do not quote code. Only the numbered list, in ${outputLanguageName}.`;
+10. No JSON, no code fences, no headings, and no text outside the list.
+11. If the project contains no process, reply with a single sentence stating that.
+12. Do not model anything in BPMN and do not quote code. Only the numbered list, in ${outputLanguageName}.`;
 }
 
 /**
@@ -659,12 +662,18 @@ export default function BpmnFlowSmith() {
 
     modelerPromiseRef.current = (async () => {
       const { default: BpmnModeler } = await import("bpmn-js/lib/Modeler");
+      const { CreateAppendAnythingModule } = await import(
+        "bpmn-js-create-append-anything"
+      );
 
       if (disposed) {
         return null;
       }
 
-      instance = new BpmnModeler({ container });
+      instance = new BpmnModeler({
+        container,
+        additionalModules: [CreateAppendAnythingModule],
+      });
       modelerRef.current = instance;
       setModelerReady(true);
 
@@ -1133,22 +1142,23 @@ export default function BpmnFlowSmith() {
               {error}
             </div>
           ) : null}
-
           {status === "ready" && summary ? (
             <div className="alert alert-success">
               {summary.origin === "generated" ? (
-                <>
-                  Rendered {summary.nodes} nodes, {summary.edges} flows
-                  {summary.lanes ? ` across ${summary.lanes} lanes` : ""}.
-                  Export it as{" "}
-                  <span className="font-mono">{summary.fileName}</span>.
-                </>
+                <div className="flex flex-col">
+                  <p>Rendered</p>
+                  <p>{summary.nodes} nodes,</p>
+                  <p>{summary.edges} flows</p>
+                  <p>{summary.lanes ? ` across ${summary.lanes} lanes` : ""}.</p>
+                  <p>Export it as{" "}</p>
+                  <p className="font-mono">{summary.fileName}</p>.
+                </div>
               ) : (
-                <>
-                  Imported{" "}
-                  <span className="font-mono">{summary.fileName}</span>. Edit it
-                  on the canvas — your changes are included when you export.
-                </>
+                  <div className="flex flex-col">
+                    <p>Imported{" "}</p>
+                    <p className="font-mono">{summary.fileName}</p>
+                    <p>Edit it on the canvas — your changes are included when you export.</p>
+                </div>
               )}
             </div>
           ) : null}
@@ -1314,7 +1324,8 @@ export default function BpmnFlowSmith() {
           {summary ? (
             <p className="shrink-0 border-t border-base-200 px-4 py-2 text-xs text-base-content/60">
               Drag elements, double-click to rename, or use the palette and
-              context pad to extend the process.
+              context pad — every BPMN element is available (create and append
+              anything, shortcuts N and A).
             </p>
           ) : null}
         </section>

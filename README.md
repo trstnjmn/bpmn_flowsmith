@@ -18,7 +18,10 @@ element can still be moved, renamed, extended or deleted before you export.
 
 - **JSON → BPMN** — validated process definitions are converted to BPMN 2.0 XML with `bpmn-moddle`.
 - **Automatic layout** — `bpmn-auto-layout` computes coordinates and routes sequence-flow waypoints.
-- **Editable canvas** — the full bpmn-js palette, context pad, drag & drop, direct labeling and undo.
+- **Editable canvas** — the full bpmn-js modelling experience: palette, context pad, drag & drop,
+  direct labeling and undo, plus **create/append anything** (`bpmn-js-create-append-anything`) so every
+  BPMN element — service/user/send/receive tasks, all gateways, boundary/catch/throw events, call
+  activities, data stores and more — can be added from the palette and context pad (shortcuts `N` and `A`).
 - **Fullscreen editing** — expand the diagram to the whole viewport, `Esc` exits again.
 - **Import & export** — read existing `.bpmn`/`.xml` files, download the current canvas as `.bpmn`.
 - **Auto-layout on import** — files without layout information (`BPMNDiagram` DI) are laid out first.

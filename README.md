@@ -24,10 +24,14 @@ element can still be moved, renamed, extended or deleted before you export.
 - **Auto-layout on import** — files without layout information (`BPMNDiagram` DI) are laid out first.
 - **No page scrolling** — the app is bound to the viewport height; only the editor and side panel scroll.
 - **Strict output prompt** — one click copies the system prompt for LLMs that emit the JSON schema.
-- **Process description field** — text typed into the field next to **Copy Prompt** replaces the prompt's
-  placeholder, so the LLM models that process. Naming several processes combines them into one diagram.
-- **Whole application switch** — the **Whole application** checkbox drops the placeholder and asks the LLM
-  to scan the entire project and merge every process it finds into a single diagram.
+- **Two tabs** — a **Prompts** tab holds the output language, the process description, the
+  whole-application switch and both copy buttons; a **Create BPMN** tab holds the JSON editor, the
+  generate action and the export buttons. The diagram stays visible next to them. **How to use** opens a
+  short guide in a modal.
+- **Process description field** — text typed into the description replaces the prompt's placeholder, so the
+  LLM models that process. Naming several processes combines them into one diagram.
+- **Whole application switch** — the **Model the whole application** checkbox drops the placeholder and asks
+  the LLM to scan the entire project and merge every process it finds into a single diagram.
 - **English or German labels** — the **Output language** selector decides which language the prompt asks the
   LLM to write labels, lane names, and edge conditions in. The choice is stored in `localStorage` and applies
   to the next copy, the rule wording, and the example JSON. When the analysed project ships translations
@@ -59,10 +63,11 @@ The tests transpile the TypeScript sources on the fly, so they need no build ste
 
 ## Workflow
 
-1. Pick the **Output language** next to the button (English by default, remembered in `localStorage`).
-2. Type the process into the **Process description** field — or tick **Whole application** to let the LLM
-   model every process of the project. Click **Copy Prompt** and paste it into your LLM.
-3. Paste the returned JSON into the **Process definition (JSON)** editor.
+1. Pick the **Output language** on the **Prompts** tab (English by default, remembered in `localStorage`).
+2. On the **Prompts** tab, type the process into the **Process description** field — or tick
+   **Model the whole application** to let the LLM model every process of the project. Click **Copy prompt**
+   and paste it into your LLM. The same tab also copies a search prompt.
+3. Switch to the **Create BPMN** tab and paste the returned JSON into the **Process definition (JSON)** editor.
 4. Click **Generate & Edit Diagram** (or press `Ctrl`/`⌘` + `Enter`).
 5. Refine the result on the canvas, optionally in fullscreen.
 6. Click **Export .bpmn**, **Export .xml** or **Export PNG** to download the current state of the

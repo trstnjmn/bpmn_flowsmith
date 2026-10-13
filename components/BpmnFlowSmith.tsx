@@ -28,6 +28,8 @@ const IMAGE_SCALE = 2;
 
 type Status = "idle" | "busy" | "ready" | "error";
 
+type PanelTab = "create" | "prompts";
+
 type RenderSummary = {
   fileName: string;
   origin: "generated" | "imported";
@@ -401,7 +403,7 @@ function buildGuideSteps(placeholder: string) {
   return [
     {
       title: "Copy the system prompt",
-      description: `Type your process description into the field next to the button and the copied prompt contains it instead of ${placeholder}. Tick "Whole application" to model every process of the app in one diagram instead. The "Output language" selector decides whether the LLM writes the labels in English or German.`,
+      description: `Open the "Prompts" tab, describe one or more processes in the text field, and the copied prompt contains it instead of ${placeholder}. Tick "Model the whole application" to cover every process of the app in one diagram instead. The "Output language" selector decides whether the LLM writes the labels in English or German.`,
     },
     {
       title: "Paste it into your OpenCode LLM",
@@ -411,12 +413,12 @@ function buildGuideSteps(placeholder: string) {
     {
       title: "Paste the JSON and generate",
       description:
-        'Paste the JSON into the editor — the "Paste" button takes it from the clipboard — and click "Generate & Edit Diagram".',
+        'Switch to the "Create BPMN" tab, paste the JSON into the editor — the "Paste" button takes it from the clipboard — and click "Generate & Edit Diagram".',
     },
     {
       title: "Search all processes (optional)",
       description:
-        '"Copy search prompt" puts a prompt on the clipboard that scans the whole application and lists every business process as a simple overview — again in the selected "Output language".',
+        'The "Prompts" tab also holds a search prompt that scans the whole application and lists every business process as a simple overview — again in the selected "Output language".',
     },
   ] as const;
 }
@@ -605,7 +607,8 @@ export default function BpmnFlowSmith() {
   const [modelerReady, setModelerReady] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [canvasEdited, setCanvasEdited] = useState(false);
-  const [guideOpen, setGuideOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<PanelTab>("prompts");
+  const [helpOpen, setHelpOpen] = useState(false);
   const [promptCopied, setPromptCopied] = useState(false);
   const [searchPromptCopied, setSearchPromptCopied] = useState(false);
   const [processDescription, setProcessDescription] = useState("");
@@ -626,6 +629,24 @@ export default function BpmnFlowSmith() {
     null,
   );
   const copyTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!helpOpen) {
+      return;
+    }
+
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setHelpOpen(false);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [helpOpen]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -938,6 +959,7 @@ export default function BpmnFlowSmith() {
     setJsonInput("");
     setProcessDescription("");
     setCoverWholeApplication(false);
+    setActiveTab("prompts");
     setStatus("idle");
     setError(null);
     setWarnings([]);
@@ -971,123 +993,51 @@ export default function BpmnFlowSmith() {
             BPMN FlowSmith
           </h1>
         </div>
+        <button
+          type="button"
+          onClick={() => setHelpOpen(true)}
+          className="btn btn-ghost btn-sm"
+        >
+          How to use
+        </button>
       </header>
 
-      <section className="shrink-0 rounded-lg border border-base-300 bg-base-100">
-
-        <div className="flex flex-row items-center justify-between gap-3 px-4 py-2">
-            <button
-              type="button"
-              onClick={() => setGuideOpen((open) => !open)}
-              aria-expanded={guideOpen}
-              aria-controls="flowsmith-guide"
-              className="flex items-center gap-2 font-semibold"
-            >
-              <span
-                aria-hidden="true"
-                className={`transition-transform ${guideOpen ? "rotate-90" : ""}`}
-              >
-                &#9656;
-              </span>
-              How to Use
-            </button>
-          <div className="flex flex-row items-center gap-4">
-            <label className="flex cursor-pointer items-center gap-2 whitespace-nowrap label">
-              <input
-                type="checkbox"
-                checked={coverWholeApplication}
-                onChange={(event) =>
-                  setCoverWholeApplication(event.target.checked)
-                }
-                className="checkbox checkbox-sm"
-              />
-              Whole application
-            </label>
-            {!coverWholeApplication && (
-              <>
-
-                <input
-                  id="flowsmith-process-description"
-                  type="text"
-                  value={processDescription}
-                  onChange={(event) => setProcessDescription(event.target.value)}
-                  placeholder={
-                    coverWholeApplication
-                      ? "Whole application"
-                      : PROMPT_LANGUAGE_RULES[outputLanguage].placeholder
-                  }
-                  disabled={coverWholeApplication}
-                  className="input min-w-90 max-w-full"
-                />
-              </>
-            )}
-              <select
-                id="flowsmith-output-language"
-                value={outputLanguage}
-                onChange={(event) =>
-                  storeOutputLanguage(event.target.value as OutputLanguage)
-                }
-                className="select min-w-32"
-              >
-                <option value="en">English</option>
-                <option value="de">Deutsch</option>
-              </select>
-              <button
-                type="button"
-                onClick={() => void handleCopyPrompt()}
-                title={
-                  coverWholeApplication
-                    ? "Copies the prompt that models every process of the whole application"
-                    : `Copies the prompt with the process description instead of ${PROMPT_LANGUAGE_RULES[outputLanguage].placeholder}`
-                }
-                className={`btn btn-outline ${
-                  promptCopied
-                    ? "btn-success"
-                    : ""
-                }`}
-              >
-                {promptCopied ? "Copied!" : "Copy Prompt"}
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleCopySearchPrompt()}
-                className={`btn btn-outline ${
-                  searchPromptCopied
-                    ? "btn-success"
-                    : ""
-                }`}
-              >
-                {searchPromptCopied ? "Copied!" : "Copy search prompt"}
-              </button>
-          </div>
-        </div>
-
-        {guideOpen ? (
-          <ol
-            id="flowsmith-guide"
-            className="grid gap-4 overflow-y-auto border-t border-base-300 px-4 py-3 sm:grid-cols-3"
-          >
-            {buildGuideSteps(PROMPT_LANGUAGE_RULES[outputLanguage].placeholder).map((step, index) => (
-              <li key={step.title} className="flex gap-3">
-                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-neutral text-xs font-semibold text-neutral-content">
-                  {index + 1}
-                </span>
-                <span>
-                  <span className="block font-medium">
-                    {step.title}
-                  </span>
-                  <span className="mt-1 block text-base-content/70">
-                    {step.description}
-                  </span>
-                </span>
-              </li>
-            ))}
-          </ol>
-        ) : null}
-      </section>
-
       <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(0,26rem)_minmax(0,1fr)]">
-        <section className="flex min-h-0 flex-col gap-3 overflow-y-auto">
+        <section className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-base-300 bg-base-100">
+          <div className="shrink-0 border-b border-base-300 px-2 py-1">
+            <div className="tabs tabs-box" role="tablist" aria-label="Panel">
+              <button
+                type="button"
+                role="tab"
+                id="flowsmith-tab-create"
+                aria-selected={activeTab === "create"}
+                aria-controls="flowsmith-panel-create"
+                onClick={() => setActiveTab("create")}
+                className={`tab ${activeTab === "create" ? "tab-active" : ""}`}
+              >
+                Create BPMN
+              </button>
+              <button
+                type="button"
+                role="tab"
+                id="flowsmith-tab-prompts"
+                aria-selected={activeTab === "prompts"}
+                aria-controls="flowsmith-panel-prompts"
+                onClick={() => setActiveTab("prompts")}
+                className={`tab ${activeTab === "prompts" ? "tab-active" : ""}`}
+              >
+                Prompts
+              </button>
+            </div>
+          </div>
+
+          {activeTab === "create" ? (
+            <div
+              id="flowsmith-panel-create"
+              role="tabpanel"
+              aria-labelledby="flowsmith-tab-create"
+              className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4"
+            >
           <div className="flex shrink-0 items-center justify-between gap-2">
             <label
               className="label"
@@ -1240,6 +1190,88 @@ export default function BpmnFlowSmith() {
               </ul>
             </details>
           ) : null}
+            </div>
+          ) : (
+            <div
+              id="flowsmith-panel-prompts"
+              role="tabpanel"
+              aria-labelledby="flowsmith-tab-prompts"
+              className="flex flex-col gap-4 overflow-y-auto p-4"
+            >
+              <label className="flex items-center justify-between gap-2 label">
+                Output language
+                <select
+                  id="flowsmith-output-language"
+                  value={outputLanguage}
+                  onChange={(event) =>
+                    storeOutputLanguage(event.target.value as OutputLanguage)
+                  }
+                  className="select select-sm w-32"
+                >
+                  <option value="en">English</option>
+                  <option value="de">Deutsch</option>
+                </select>
+              </label>
+
+              <div className="flex flex-col gap-2">
+                <label htmlFor="flowsmith-process-description" className="label">
+                  Process description
+                </label>
+                <textarea
+                  id="flowsmith-process-description"
+                  value={processDescription}
+                  onChange={(event) => setProcessDescription(event.target.value)}
+                  placeholder="e.g. Invoice approval: a clerk checks the invoice, a team lead approves it, the ordering system books it."
+                  disabled={coverWholeApplication}
+                  rows={4}
+                  className="textarea w-full resize-none"
+                />
+                <label className="flex cursor-pointer items-center gap-2 label">
+                  <input
+                    type="checkbox"
+                    checked={coverWholeApplication}
+                    onChange={(event) =>
+                      setCoverWholeApplication(event.target.checked)
+                    }
+                    className="checkbox checkbox-sm"
+                  />
+                  Model the whole application
+                </label>
+                <button
+                  type="button"
+                  onClick={() => void handleCopyPrompt()}
+                  title={
+                    coverWholeApplication
+                      ? "Copies the prompt that models every process of the whole application"
+                      : `Copies the prompt with the process description instead of ${PROMPT_LANGUAGE_RULES[outputLanguage].placeholder}`
+                  }
+                  className={`btn btn-primary ${
+                    promptCopied ? "btn-success" : ""
+                  }`}
+                >
+                  {promptCopied ? "Copied!" : "Copy prompt"}
+                </button>
+              </div>
+
+              <div className="border-t border-base-300" />
+
+              <div className="flex flex-col gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleCopySearchPrompt()}
+                  className={`btn btn-outline ${
+                    searchPromptCopied ? "btn-success" : ""
+                  }`}
+                >
+                  {searchPromptCopied ? "Copied!" : "Copy search prompt"}
+                </button>
+                <p className="text-xs text-base-content/60">
+                  Scans the whole project and lists every business process as a
+                  simple overview — in the selected output language.
+                </p>
+              </div>
+            </div>
+          )}
         </section>
 
         <section
@@ -1286,6 +1318,51 @@ export default function BpmnFlowSmith() {
             </p>
           ) : null}
         </section>
+      </div>
+
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="flowsmith-help-title"
+        className={`modal ${helpOpen ? "modal-open" : ""}`}
+      >
+        <div className="modal-box max-w-2xl">
+          <h3 id="flowsmith-help-title" className="text-lg font-semibold">
+            How to use FlowSmith
+          </h3>
+          <ol className="mt-4 space-y-4">
+            {buildGuideSteps(
+              PROMPT_LANGUAGE_RULES[outputLanguage].placeholder,
+            ).map((step, index) => (
+              <li key={step.title} className="flex gap-3">
+                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-neutral text-xs font-semibold text-neutral-content">
+                  {index + 1}
+                </span>
+                <span>
+                  <span className="block font-medium">{step.title}</span>
+                  <span className="mt-1 block text-sm text-base-content/70">
+                    {step.description}
+                  </span>
+                </span>
+              </li>
+            ))}
+          </ol>
+          <div className="modal-action">
+            <button
+              type="button"
+              onClick={() => setHelpOpen(false)}
+              className="btn"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+        <button
+          type="button"
+          aria-label="Close help"
+          onClick={() => setHelpOpen(false)}
+          className="modal-backdrop cursor-pointer border-0 bg-transparent"
+        />
       </div>
     </div>
   );

@@ -23,6 +23,9 @@ element can still be moved, renamed, extended or deleted before you export.
   BPMN element — service/user/send/receive tasks, all gateways, boundary/catch/throw events, call
   activities, data stores and more — can be added from the palette and context pad (shortcuts `N` and `A`).
 - **Fullscreen editing** — expand the diagram to the whole viewport, `Esc` exits again.
+- **Blank canvas** — the editor always holds an editable diagram. After **Reset** (or before any
+  generation) it shows an empty process you can fill from scratch; exported files fall back to
+  `process.bpmn` when no name is known yet.
 - **Import & export** — read existing `.bpmn`/`.xml` files, download the current canvas as `.bpmn`.
 - **Auto-layout on import** — files without layout information (`BPMNDiagram` DI) are laid out first.
 - **No page scrolling** — the app is bound to the viewport height; only the editor and side panel scroll.

@@ -20,8 +20,6 @@ type BpmnModelerInstance = InstanceType<
   (typeof import("bpmn-js/lib/Modeler"))["default"]
 >;
 
-type ResettableModeler = BpmnModelerInstance & { clear(): void };
-
 type DiagramFormat = "bpmn" | "xml";
 
 const IMAGE_SCALE = 2;
@@ -670,18 +668,27 @@ export default function BpmnFlowSmith() {
         return null;
       }
 
-      instance = new BpmnModeler({
+      const modeler = new BpmnModeler({
         container,
         additionalModules: [CreateAppendAnythingModule],
       });
-      modelerRef.current = instance;
-      setModelerReady(true);
+      instance = modeler;
+      modelerRef.current = modeler;
 
-      instance.on("commandStack.changed", () => {
+      modeler.on("commandStack.changed", () => {
         setCanvasEdited(true);
       });
 
-      return instance;
+      await modeler.createDiagram();
+      if (disposed) {
+        return modeler;
+      }
+
+      modeler.get<Canvas>("canvas", true).zoom("fit-viewport");
+      setModelerReady(true);
+      setCanvasEdited(false);
+
+      return modeler;
     })();
 
     const observer = new ResizeObserver(() => {
@@ -975,7 +982,19 @@ export default function BpmnFlowSmith() {
     setLintIssues([]);
     setSummary(null);
     setCanvasEdited(false);
-    (modelerRef.current as ResettableModeler | null)?.clear();
+
+    void (async () => {
+      const pendingModeler = modelerPromiseRef.current;
+      const modeler = pendingModeler ? await pendingModeler : null;
+
+      if (!modeler) {
+        return;
+      }
+
+      await modeler.createDiagram();
+      modeler.get<Canvas>("canvas", true).zoom("fit-viewport");
+      setCanvasEdited(false);
+    })();
   }, []);
 
   const handleTextareaKeyDown = useCallback(
@@ -1085,7 +1104,7 @@ export default function BpmnFlowSmith() {
               <button
                 type="button"
                 onClick={() => void handleExport("bpmn")}
-                disabled={!summary || isBusy || isExporting}
+                disabled={!modelerReady || isBusy || isExporting}
                 className="btn btn-outline"
               >
                 {isExporting ? "Exporting…" : "Export .bpmn"}
@@ -1094,7 +1113,7 @@ export default function BpmnFlowSmith() {
               <button
                 type="button"
                 onClick={() => void handleExport("xml")}
-                disabled={!summary || isBusy || isExporting}
+                disabled={!modelerReady || isBusy || isExporting}
                 className="btn btn-outline"
               >
                 Export .xml
@@ -1103,7 +1122,7 @@ export default function BpmnFlowSmith() {
               <button
                 type="button"
                 onClick={() => void handleExportImage()}
-                disabled={!summary || isBusy || isExporting}
+                disabled={!modelerReady || isBusy || isExporting}
                 className="btn btn-outline"
               >
                 Export PNG
@@ -1314,18 +1333,17 @@ export default function BpmnFlowSmith() {
           </div>
           <div className="relative min-h-0 flex-1">
             <div ref={containerRef} className="h-full w-full" />
-            {!summary ? (
+            {!modelerReady ? (
               <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-6 text-center text-base-content/40">
-                Generate a diagram from JSON or import an existing .bpmn file
-                to start editing
+                Starting the editor…
               </div>
             ) : null}
           </div>
-          {summary ? (
+          {modelerReady ? (
             <p className="shrink-0 border-t border-base-200 px-4 py-2 text-xs text-base-content/60">
-              Drag elements, double-click to rename, or use the palette and
-              context pad — every BPMN element is available (create and append
-              anything, shortcuts N and A).
+              Start from scratch or generate from JSON — drag elements,
+              double-click to rename, and use the palette and context pad
+              (every BPMN element is available, shortcuts N and A).
             </p>
           ) : null}
         </section>

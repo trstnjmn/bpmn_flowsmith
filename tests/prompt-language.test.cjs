@@ -11,14 +11,14 @@ const src = fs.readFileSync(path.join(project, "components/BpmnFlowSmith.tsx"), 
 const start = src.indexOf('type OutputLanguage = "en" | "de";');
 const end = src.indexOf("function downloadBpmn");
 if (start < 0 || end < 0) throw new Error("markers not found");
-const region = src.slice(start, end) + "\nexport const __test = { buildSystemPrompt, buildSearchPrompt, buildGuideSteps };\n";
+const region = src.slice(start, end) + "\nexport const __test = { buildSystemPrompt, buildSearchPrompt, buildGuideSteps, buildWholeApplicationPrompt, applyProcessDescription, buildPromptForCopy };\n";
 
 const js = ts.transpileModule(region, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: "es2022" },
 }).outputText;
 const mod = { exports: {} };
 new Function("exports", "module", "require", js)(mod.exports, mod, require);
-const { buildSystemPrompt, buildSearchPrompt, buildGuideSteps } = mod.exports.__test;
+const { buildSystemPrompt, buildSearchPrompt, buildGuideSteps, buildWholeApplicationPrompt, applyProcessDescription, buildPromptForCopy } = mod.exports.__test;
 
 const failures = [];
 function check(name, ok, info) {
@@ -137,6 +137,83 @@ for (const [name, prompt] of [["en", en], ["de", de]]) {
 }
 check("en: granularity example is English", en.includes('one method "createOrder" that validates the input, reserves stock and triggers the payment becomes THREE nodes ("Validate input data", "Reserve stock", "Trigger payment")'));
 check("de: granularity example is German", de.includes('one method "Bestellung anlegen" that validates the input, reserves stock and triggers the payment becomes THREE nodes ("Eingangsdaten validieren", "Bestand reservieren", "Zahlung auslösen")'));
+
+  assert.equal(
+    failures.length,
+    0,
+    `failures: ${failures.length}\n` + failures.join("\n"),
+  );
+});
+
+test("process description, translations and whole-application mode", () => {
+  const en = buildSystemPrompt("en");
+  const de = buildSystemPrompt("de");
+
+  const failures = [];
+  function check(name, ok, info) {
+    if (ok) return;
+    failures.push(info ? `${name} -> ${info}` : name);
+  }
+
+  // The prompt must reuse the project's own translation catalog for labels.
+  for (const [name, prompt] of [["en", en], ["de", de]]) {
+    check(`${name}: reuses project translations`, prompt.includes("reuse the project's own"));
+    check(`${name}: names translation resources`, prompt.includes("i18n or locale files"));
+    check(`${name}: lane rule consults the catalog`, prompt.includes("take the term from the project's own translation catalog"));
+  }
+
+  // Section 6 tells the LLM to merge several described processes into one diagram.
+  check(
+    "section 6 combines several processes",
+    en.includes("combine them into ONE process definition") && de.includes("combine them into ONE process definition"),
+  );
+
+  // Filling the placeholder with the typed description.
+  check(
+    "en: description replaces the token",
+    applyProcessDescription(en, "en", "My process").includes("My process") &&
+      !applyProcessDescription(en, "en", "My process").includes("[[PROCESS DESCRIPTION]]"),
+  );
+  check(
+    "de: description replaces the German token",
+    applyProcessDescription(de, "de", "Mein Prozess").includes("Mein Prozess") &&
+      !applyProcessDescription(de, "de", "Mein Prozess").includes("[[PROZESSBESCHREIBUNG]]"),
+  );
+  check("empty description keeps the placeholder", applyProcessDescription(en, "en", "   ") === en);
+  check(
+    "description with $ stays literal",
+    applyProcessDescription(en, "en", "$100 & $&").includes("$100 & $&"),
+  );
+
+  // Whole-application mode.
+  check(
+    "whole-app prompt has no placeholder token",
+    !buildWholeApplicationPrompt("en").includes("[[PROCESS DESCRIPTION]]") &&
+      !buildWholeApplicationPrompt("de").includes("[[PROZESSBESCHREIBUNG]]"),
+  );
+  check(
+    "whole-app prompt keeps the exploration section",
+    buildWholeApplicationPrompt("en").includes("## 1. MANDATORY PROJECT EXPLORATION"),
+  );
+  check(
+    "whole-app prompt keeps the JSON schema",
+    buildWholeApplicationPrompt("en").includes("## 5. JSON SCHEMA"),
+  );
+  check(
+    "whole-app prompt combines every process",
+    buildWholeApplicationPrompt("en").includes("find EVERY business process") &&
+      buildWholeApplicationPrompt("en").includes("ONE single process definition"),
+  );
+
+  // buildPromptForCopy decides between the two modes.
+  check(
+    "copy helper uses the whole-app prompt when enabled",
+    buildPromptForCopy("en", "ignored", true) === buildWholeApplicationPrompt("en"),
+  );
+  check(
+    "copy helper fills the description otherwise",
+    buildPromptForCopy("en", "My process", false).includes("My process"),
+  );
 
   assert.equal(
     failures.length,
